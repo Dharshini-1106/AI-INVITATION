@@ -1,0 +1,30 @@
+# OS
+.DS_Store
+Thumbs.db
+
+# Node
+node_modules/
+
+# Expo
+.expo/
+dist/
+web-build/
+expo-env.d.ts
+
+# Native (ignored in managed workflow; kept for reference)
+android/app/build/
+android/build/
+android/.gradle/
+ios/Pods/
+
+# Metro
+.metro-health-check*
+
+# Bundler
+bundle/
+.vscode/
+
+# Misc
+*.log
+.env
+.env.local

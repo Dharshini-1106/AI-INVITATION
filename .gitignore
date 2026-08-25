@@ -1,0 +1,91 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+.venv/
+env/
+ENV/
+python311/
+backend/.venv-ml311/
+*.egg-info/
+dist/
+build/
+
+# Caches
+.ml-cache/
+.kilo/
+
+# Node
+node_modules/
+dist-ssr/
+*.local
+
+mobile/.expo/
+mobile/.expo-startup-check/
+
+model-home/.paddleocr/
+
+__pycache__/
+*.py[cod]
+*.log
+*.txt
+
+_paddle_staging/
+backend/_debug_*
+backend/_paddleocr_*
+
+# Expo / React Native
+mobile/.expo/
+mobile/dist/
+mobile/web-build/
+mobile/android/
+mobile/ios/
+mobile/eas.json.local
+mobile/npm-debug.log*
+
+# Environment files
+.env
+.env.local
+.env.production
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Uploads / model weights
+backend/uploads/
+backend/app/core/enhancement/weights/
+*.pt
+*.pth
+
+# Logs
+*.log
+npm-debug.log*
+pip-cache/
+
+# Debug files
+backend/_dbg_*
+backend/_debug_*
+backend/_test_*
+backend/_smoke_*
+backend/_phase*
+backend/_verify_*
+backend/_inspect_*
+backend/_pipeline_test.py
+backend/_run_pipeline.py
+
+# Debug/generated images and outputs
+backend/_*.png
+backend/_*.json
+backend/_*.txt
+backend/tmp_*.png
+backend/tamil/_*.png
+backend/tamil/_*.json

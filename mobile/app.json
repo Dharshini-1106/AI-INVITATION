@@ -1,0 +1,67 @@
+{
+  "expo": {
+    "name": "InvitationSense",
+    "slug": "invitationsense",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "light",
+    "splash": {
+      "image": "./assets/splash.png",
+      "resizeMode": "contain",
+      "backgroundColor": "#0f172a"
+    },
+    "assetBundlePatterns": [
+      "**/*"
+    ],
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.invitationsensemobile",
+      "infoPlist": {
+        "NSCameraUsageDescription": "This app uses the camera to scan invitation cards.",
+        "NSPhotoLibraryUsageDescription": "This app uses the photo library to upload invitation images.",
+        "NSCalendarsUsageDescription": "This app adds invitation events to your calendar after you confirm them."
+      }
+    },
+    "android": {
+      "package": "com.invitationsensemobile",
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/adaptive-icon.png",
+        "backgroundColor": "#0f172a"
+      },
+      "permissions": [
+        "CAMERA",
+        "READ_CALENDAR",
+        "WRITE_CALENDAR",
+        "READ_MEDIA_IMAGES",
+        "READ_EXTERNAL_STORAGE",
+        "WRITE_EXTERNAL_STORAGE"
+      ]
+    },
+    "web": {
+      "favicon": "./assets/favicon.png",
+      "bundler": "metro"
+    },
+    "plugins": [
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "The app accesses your photos to upload invitation images.",
+          "cameraPermission": "The app uses the camera to scan invitation cards."
+        }
+      ],
+      [
+        "expo-camera",
+        {
+          "cameraPermission": "This app uses the camera to scan invitation cards."
+        }
+      ],
+      [
+        "expo-calendar",
+        {
+          "calendarPermission": "This app adds invitation events to your calendar after you confirm them."
+        }
+      ]
+    ]
+  }
+}
