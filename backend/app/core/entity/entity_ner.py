@@ -14,8 +14,10 @@ and the source strategy so callers can trace provenance.
 """
 import logging
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple
+
+from ...config import settings
 
 logger = logging.getLogger(__name__)
 
@@ -53,8 +55,10 @@ _ner_available = False
 
 
 def _get_ner_pipeline():
-    """Lazily load a multilingual transformer NER pipeline if available."""
+    """Lazily load a multilingual transformer NER pipeline if available and enabled."""
     global _ner_pipe, _ner_available
+    if not settings.use_ner:
+        return None
     if _ner_pipe is not None:
         return _ner_pipe
     try:

@@ -12,6 +12,8 @@ import logging
 import re
 from typing import List
 
+from ...config import settings
+
 logger = logging.getLogger(__name__)
 
 # Known place/venue name dictionary for correction (OCR errors -> correct)
@@ -107,8 +109,10 @@ _sbert_available = False
 
 
 def _get_sbert():
-    """Lazily load the Sentence-BERT model if available."""
+    """Lazily load the Sentence-BERT model if available and enabled."""
     global _sbert_model, _sbert_available
+    if not settings.use_sbert:
+        return None
     if _sbert_model is not None:
         return _sbert_model
     try:

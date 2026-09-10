@@ -58,10 +58,17 @@ function ProcessingScreen() {
       } catch (e) {
         if (cancelled) return;
         clearInterval(stageTimer);
-        setError(
-          e.response?.data?.detail ||
-          'Analysis failed. Please check the backend is running and try again.'
-        );
+        if (e.code === 'ECONNABORTED') {
+          setError('Analysis timed out. The invitation is taking longer than expected to process. Please try again with a clearer image or wait a bit longer.');
+        } else if (!e.response) {
+          setError('Cannot reach the backend. Please check that the backend is running on your PC and your phone/PC are on the same network.');
+        } else if (e.response.status >= 500) {
+          setError('Backend server error. Please try again later.');
+        } else if (e.response.status >= 400) {
+          setError(e.response?.data?.detail || `Request failed (${e.response.status}). Please try again.`);
+        } else {
+          setError('Analysis failed. Please check the backend is running and try again.');
+        }
       }
     };
 

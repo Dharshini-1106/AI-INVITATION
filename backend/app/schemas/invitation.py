@@ -3,6 +3,13 @@ from typing import List, Optional
 from pydantic import BaseModel, Field
 
 
+class Person(BaseModel):
+    """A person participating in or associated with the invitation."""
+
+    name: str = ""
+    role: str = ""
+
+
 class ImageQuality(BaseModel):
     """Quality analysis result for an input image."""
 
@@ -30,6 +37,7 @@ class Event(BaseModel):
     venue: str = ""
     address: str = ""
     contact_number: str = ""
+    occasion_detail: str = ""
     confidence: float = 0.0
 
     # Calendar-specific fields (optional, used by calendar endpoint)
@@ -51,6 +59,10 @@ class OCRLine(BaseModel):
 class InvitationResult(BaseModel):
     """Final structured result returned to the client."""
 
+    invitation_mode: str = "single"
+    people: List[Person] = Field(default_factory=list)
+    events: List[Event] = Field(default_factory=list)
+
     event_name: str = ""
     event_type: str = ""
     bride_name: str = ""
@@ -63,12 +75,11 @@ class InvitationResult(BaseModel):
     language: str = ""
     confidence_score: float = 0.0
     number_of_events: int = 1
-    events: List[Event] = Field(default_factory=list)
     quality: ImageQuality = Field(default_factory=ImageQuality)
     raw_text: str = ""
     ocr_layout: List[OCRLine] = Field(default_factory=list)
     ocr_engine: str = ""
-    ocr_confidence: float = 0.0
+    ocr_confidence: Optional[float] = None
     tamil_character_count: int = 0
     english_character_count: int = 0
     fallback_used: bool = False

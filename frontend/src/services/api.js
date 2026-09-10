@@ -28,6 +28,7 @@ export async function analyzeInvitation(file) {
   formData.append('file', file);
   const res = await client.post(API_CONFIG.endpoints.analyze, formData, {
     headers: { 'Content-Type': 'multipart/form-data' },
+    timeout: API_CONFIG.analyzeTimeout || 600000,
   });
   return new InvitationResult(res.data);
 }

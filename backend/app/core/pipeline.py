@@ -108,10 +108,28 @@ def run_pipeline(image_bytes: bytes, filename: str, source: str = "gallery") -> 
         finally:
             Path(tmp_path).unlink(missing_ok=True)
 
-    # Run OCR on the enhanced image (single pass by default). When
-    # use_dual_ocr is enabled, also run on the original and merge, which
-    # catches more text but is slower.
+    # Run OCR on the enhanced image. extract_text already performs lightweight
+    # script detection and runs the correct PaddleOCR model (Tamil or English)
+    # based on that detection, so only one OCR pass is needed per image.
     enhanced_ocr = _ocr_one(enhanced_img)
+
+    # ------------------------------------------------------------------
+    # Secondary OCR pass on the original (non-enhanced) image.
+    #
+    # Enhancements such as CLAHE / perspective correction can occasionally
+    # suppress short text lines or change their shape enough for the
+    # recogniser to miss them.  Running a second pass on the original
+    # image gives us a fallback source of text without the cost of a
+    # full rapidocr fallback.
+    # ------------------------------------------------------------------
+    original_ocr = None
+    if enhanced_ocr is not None:
+        try:
+            original_ocr = _ocr_one(img)
+        except Exception as exc:
+            logger.warning("[%s OCR] Original-image OCR pass failed (%s)", label, exc)
+
+    # Extract per-request OCR diagnostics from the primary OCR run.
 
     # Extract per-request OCR diagnostics from the primary OCR run.
     enhanced_diag = getattr(enhanced_ocr, "ocr_diagnostics", {})
@@ -142,8 +160,7 @@ def run_pipeline(image_bytes: bytes, filename: str, source: str = "gallery") -> 
 
     # Determine whether the enhanced OCR already used Tamil mode.
     # If so, we can skip the English->Tamil fallback on subsequent passes.
-    _enhanced_used_tamil = enhanced_diag.get("final_engine", "") == "paddleocr-ta"
-
+    
     def _lines_with_source(ocr_result):
         """Return OCR lines together with their actual selected engine."""
         selected = getattr(ocr_result, "selected_lines", [])
@@ -152,70 +169,40 @@ def run_pipeline(image_bytes: bytes, filename: str, source: str = "gallery") -> 
         return [(text, box, conf, "unknown")
                 for text, box, conf in ocr_result.lines]
 
-    # A small second OCR view improves recall for fine invitation text without
-    # changing the main enhancement pipeline or adding another model.
-    # If Tamil was already detected in the enhanced pass, run the upscaled
-    # pass directly in Tamil mode to avoid a redundant English->Tamil double
-    # pass (which doubles inference time on CPU).
-    ocr_scale = 2
-    upscaled_for_ocr = cv2.resize(
-        enhanced_img, None, fx=ocr_scale, fy=ocr_scale,
-        interpolation=cv2.INTER_CUBIC,
-    )
-    upscaled_lang = "ta" if _enhanced_used_tamil else "en"
-    upscaled_ocr = _ocr_one(upscaled_for_ocr, lang=upscaled_lang)
-    upscaled_lines = [
-        (text, box / ocr_scale, conf, source_name)
-        for text, box, conf, source_name in _lines_with_source(upscaled_ocr)
-    ]
-    if settings.use_dual_ocr:
-        original_ocr = _ocr_one(img, lang=upscaled_lang)
-        merged_lines = (
-            _lines_with_source(enhanced_ocr) + upscaled_lines
-            + _lines_with_source(original_ocr)
-        )
-    else:
-        merged_lines = _lines_with_source(enhanced_ocr) + upscaled_lines
+    # Use enhanced OCR lines directly — extract_text already handles language
+    # detection, Tamil/English model routing, and fallbacks internally.
+    enhanced_lines = _lines_with_source(enhanced_ocr)
 
-    # ------------------------------------------------------------------
-    # Controlled Tamil OCR: only run when preliminary OCR shows Tamil
-    # script, and run on multiple preprocessing variants for robustness.
-    # ------------------------------------------------------------------
-    def _has_tamil_in_lines(lines):
-        for text, _, _, _ in lines:
-            if any(0x0B80 <= ord(ch) <= 0x0BFF for ch in str(text)):
-                return True
-        return False
+    # Merge in lines from the original-image OCR pass.  This recovers text
+    # that the enhancement pipeline may have suppressed (e.g. short headings
+    # like "Party" or "AT 8 PM" on bright/rotated images).
+    original_lines = []
+    if original_ocr is not None:
+        original_lines = _lines_with_source(original_ocr)
 
-    def _otsu_binarize(img_arr):
-        gray = cv2.cvtColor(img_arr, cv2.COLOR_BGR2GRAY) if len(img_arr.shape) == 3 else img_arr
-        _, thresh = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-        return cv2.cvtColor(thresh, cv2.COLOR_GRAY2BGR) if len(img_arr.shape) == 3 else thresh
+    # Combine both passes, preserving reading order from the enhanced pass
+    # first and appending any extra lines from the original pass that were
+    # not already present.
+    seen_keys = set()
+    merged_lines = []
+    for text, box, conf, source_name in enhanced_lines:
+        key = "".join(ch for ch in str(text).lower() if ch.isalnum())
+        if key and key not in seen_keys:
+            seen_keys.add(key)
+            merged_lines.append((text, box, conf, source_name))
+    for text, box, conf, source_name in original_lines:
+        key = "".join(ch for ch in str(text).lower() if ch.isalnum())
+        if key and key not in seen_keys:
+            seen_keys.add(key)
+            merged_lines.append((text, box, conf, source_name + "_original"))
 
-    if _has_tamil_in_lines(merged_lines) and not _enhanced_used_tamil:
-        tamil_variants = []
-        for variant_img, variant_name in [
-            (img, "original"),
-            (enhanced_img, "enhanced"),
-            (_otsu_binarize(img), "otsu"),
-        ]:
-            try:
-                res = _ocr_one(variant_img, use_ppocr=False,
-                              use_rapidocr=False, use_tamil_ocr=True, lang="ta")
-                tamil_variants.extend(_lines_with_source(res))
-            except Exception as exc:
-                logger.warning("Tamil OCR variant %s failed (%s)", variant_name, exc)
-        merged_lines = merged_lines + tamil_variants
-
-    # Keep OCR provenance visible for real-device diagnostics. The raw text is
-    # already returned in the API result; this request-scoped log makes it
-    # possible to compare Gallery and Camera input without changing either
-    # upload path.
+    # Collect OCR engine provenance from both passes.
     ocr_engines = sorted({
         item.get("source", "unknown")
-        for ocr_result in (enhanced_ocr, upscaled_ocr)
-        for item in getattr(ocr_result, "raw_results", [])
-    } | {source_name for _, _, _, source_name in merged_lines}) or ["fallback"]
+        for item in getattr(enhanced_ocr, "raw_results", [])
+    } | {item.get("source", "unknown")
+         for item in getattr(original_ocr, "raw_results", [])
+         if original_ocr is not None} | {source_name for _, _, _, source_name in merged_lines}) or ["fallback"]
 
     seen = set()
     unique_lines = []
@@ -239,7 +226,7 @@ def run_pipeline(image_bytes: bytes, filename: str, source: str = "gallery") -> 
     ocr_confidences = [float(conf) for _, _, conf, _ in unique_lines]
     ocr_confidence = round(
         sum(ocr_confidences) / len(ocr_confidences), 4
-    ) if ocr_confidences else 0.0
+    ) if ocr_confidences else None
     ocr_layout = [
         {
             "text": str(text).strip(),
@@ -312,6 +299,13 @@ def run_pipeline(image_bytes: bytes, filename: str, source: str = "gallery") -> 
     # primary (enhanced) OCR run diagnostics, not from the merged engine list.
     primary_diag = getattr(enhanced_ocr, "ocr_diagnostics", {})
     final_ocr_engine = primary_diag.get("final_engine", "unknown")
+    if not final_ocr_engine or final_ocr_engine == "unknown":
+        # Fallback to the merged engine list when the primary diagnostics
+        # did not record a final engine explicitly.
+        if ocr_engines:
+            final_ocr_engine = ocr_engines[0]
+        else:
+            final_ocr_engine = "unknown"
     rapidocr_fallback_used = primary_diag.get("rapidocr_fallback_used", False)
 
     return {
@@ -327,6 +321,8 @@ def run_pipeline(image_bytes: bytes, filename: str, source: str = "gallery") -> 
         "language": language,
         "confidence_score": final_confidence,
         "number_of_events": parsed.get("number_of_events", 1),
+        "invitation_mode": parsed.get("invitation_mode", "single"),
+        "people": parsed.get("people", []),
         "events": parsed.get("events", []),
         "quality": quality,
         "raw_text": raw_text,

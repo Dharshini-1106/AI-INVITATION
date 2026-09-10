@@ -110,18 +110,17 @@ export default function ProcessingScreen({ navigation, route }) {
         if (cancelled) return;
         clearInterval(stageTimer);
 
-// Determine whether this is a network-level failure (backend unreachable)
-        // vs. a server response. Axios sets e.response only when the server
-        // actually replied; on a connection failure e.response is undefined and
-        // e.message is the generic "Network Error".
-        const isNetworkError =
-          !e.response ||
-          e.code === 'ERR_NETWORK' ||
+        const isTimeout =
           e.code === 'ECONNABORTED' ||
           e.code === 'ETIMEDOUT' ||
-          e.code === 'ECONNREFUSED';
+          (e.code === 'ERR_NETWORK' && /timeout/i.test(e.message));
 
-        if (isNetworkError) {
+        if (isTimeout) {
+          setError(
+            'Analysis timed out. The invitation is taking longer than expected ' +
+            'to process. Please try again with a clearer image or wait a bit longer.'
+          );
+        } else if (!e.response || e.code === 'ERR_NETWORK' || e.code === 'ECONNREFUSED') {
           const backendAddr = API_CONFIG.baseURL.replace(/\/api\/v1$/, '');
           setError(
             `Cannot reach the backend at ${backendAddr}. ` +

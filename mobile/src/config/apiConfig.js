@@ -11,6 +11,7 @@ const emulatorUrl = Platform.OS === 'android' ? 'http://10.0.2.2:8000' : 'http:/
 const API_CONFIG = {
   baseURL: apiBaseUrl(configuredUrl || emulatorUrl),
   timeout: 180000,
+  analyzeTimeout: 600000,
 };
 
 function candidateBaseUrls() {

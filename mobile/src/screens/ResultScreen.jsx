@@ -3,12 +3,19 @@ import { SafeAreaView, ScrollView, StyleSheet, Text, TextInput, TouchableOpacity
 import colors from '../theme/colors';
 import { createConfirmedCalendarEvents, validateCalendarEvents } from '../services/calendarService';
 
-const FIELDS = [
-  ['event_name', 'Event Name'], ['event_type', 'Event Type'], ['bride_name', 'Bride'],
-  ['groom_name', 'Groom'], ['date', 'Date'], ['time', 'Time'], ['end_time', 'End Time'],
-  ['venue', 'Venue'], ['address', 'Address'], ['contact_number', 'Contact'],
+const EVENT_FIELDS = [
+  ['event_name', 'Event Name'], ['event_type', 'Event Type'], ['date', 'Date'],
+  ['time', 'Time'], ['end_time', 'End Time'], ['venue', 'Venue'],
+  ['address', 'Address'], ['contact_number', 'Contact'],
 ];
+const COUPLE_FIELDS = [['bride_name', 'Bride'], ['groom_name', 'Groom']];
 const display = (value) => value === undefined || value === null || value === '' ? 'Not available' : String(value);
+
+function isCoupleEvent(eventType) {
+  if (!eventType) return false;
+  const t = eventType.toLowerCase().trim();
+  return ['wedding', 'marriage', 'engagement', 'nikah', 'walima', 'mehndi', 'haldi', 'muhurtham'].includes(t);
+}
 
 export default function ResultScreen({ navigation, route }) {
   const { result } = route.params || {};
@@ -46,17 +53,63 @@ export default function ResultScreen({ navigation, route }) {
 
   if (!result) return <SafeAreaView style={styles.container}><View style={styles.empty}><Text style={styles.muted}>No result found.</Text><TouchableOpacity onPress={() => navigation.replace('Home')}><Text style={styles.homeText}>Go Home</Text></TouchableOpacity></View></SafeAreaView>;
 
+  const people = (result.people || []).filter((p) => p && (p.name || p.role));
+  if (!people.length) {
+    if (result.bride_name) people.push({ name: result.bride_name, role: 'Bride' });
+    if (result.groom_name) people.push({ name: result.groom_name, role: 'Groom' });
+  }
+
   return <SafeAreaView style={styles.container}><ScrollView contentContainerStyle={styles.content}>
     <Text style={styles.title}>{scheduled ? 'Event Added Successfully' : 'We extracted this information.'}</Text>
     <Text style={styles.subtitle}>{scheduled ? 'Your confirmed event details were added to your calendar.' : 'Is everything correct?'}</Text>
-    {events.map((event, eventIndex) => <View key={`${event.event_name || 'event'}-${eventIndex}`} style={styles.card}><Text style={styles.eventTitle}>Event {eventIndex + 1}{event.event_name ? ` - ${event.event_name}` : ''}</Text>{FIELDS.map(([field, label]) => <View key={field} style={styles.row}><Text style={styles.label}>{label}</Text>{editing && !scheduled ? <TextInput style={styles.input} value={String(event[field] ?? '')} onChangeText={(value) => update(eventIndex, field, value)} placeholder="Not available" placeholderTextColor={colors.textMuted} /> : <Text style={styles.value}>{display(event[field])}</Text>}</View>)}</View>)}
+
+    {people.length > 0 && (
+      <View style={styles.card}>
+        <Text style={styles.eventTitle}>People / Participants</Text>
+        {people.map((p, idx) => (
+          <View key={idx} style={styles.row}>
+            <Text style={styles.label}>{p.role || 'Person'}</Text>
+            <Text style={styles.value}>{display(p.name)}</Text>
+          </View>
+        ))}
+      </View>
+    )}
+
+    {events.map((event, eventIndex) => {
+      const showCouple = isCoupleEvent(event.event_type);
+      const fields = showCouple
+        ? [...EVENT_FIELDS, ...COUPLE_FIELDS]
+        : EVENT_FIELDS;
+      return (
+        <View key={`${event.event_name || 'event'}-${eventIndex}`} style={styles.card}>
+          <Text style={styles.eventTitle}>Event {eventIndex + 1}{event.event_name ? ` - ${event.event_name}` : ''}</Text>
+          {fields.map(([field, label]) => (
+            <View key={field} style={styles.row}>
+              <Text style={styles.label}>{label}</Text>
+              {editing && !scheduled ? (
+                <TextInput
+                  style={styles.input}
+                  value={String(event[field] ?? '')}
+                  onChangeText={(value) => update(eventIndex, field, value)}
+                  placeholder="Not available"
+                  placeholderTextColor={colors.textMuted}
+                />
+              ) : (
+                <Text style={styles.value}>{display(event[field])}</Text>
+              )}
+            </View>
+          ))}
+        </View>
+      );
+    })}
+
     <View style={styles.card}>
       <Text style={styles.eventTitle}>OCR details</Text>
       <Text style={styles.label}>Language</Text><Text style={styles.value}>{display(result.language)}</Text>
       <Text style={styles.label}>Engine / confidence</Text><Text style={styles.value}>{display(result.ocr_engine)} / {Math.round((result.ocr_confidence || 0) * 100)}%</Text>
       <Text style={styles.label}>Tamil / English characters</Text><Text style={styles.value}>{result.tamil_character_count || 0} / {result.english_character_count || 0}</Text>
       {!!result.raw_text && <><Text style={styles.label}>Raw extracted text</Text><Text selectable style={styles.rawText}>{result.raw_text}</Text></>}
-      {(result.processing_notes || []).map((note, index) => <Text key={`${note}-${index}`} style={styles.note}>{note}</Text>)}
+      {(result.processing_notes || []).map((note, index) => <Text key={`${note}-${index}`} style={styles.note}>• {note}</Text>)}
     </View>
     {!!message && <Text style={scheduled ? styles.success : styles.error}>{message}</Text>}
     {!scheduled && (editing ? <TouchableOpacity style={styles.primary} onPress={() => { setEditing(false); setMessage(''); }}><Text style={styles.primaryText}>Save Edits and Review</Text></TouchableOpacity> : <><TouchableOpacity style={styles.primary} disabled={scheduling} onPress={schedule}><Text style={styles.primaryText}>{scheduling ? 'Scheduling...' : 'Save and Schedule'}</Text></TouchableOpacity><TouchableOpacity style={styles.secondary} onPress={() => setEditing(true)}><Text style={styles.secondaryText}>Edit Details</Text></TouchableOpacity></>)}
@@ -65,5 +118,5 @@ export default function ResultScreen({ navigation, route }) {
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: colors.background }, content: { padding: 20, paddingBottom: 40 }, empty: { flex: 1, justifyContent: 'center', alignItems: 'center' }, title: { color: colors.text, fontSize: 23, fontWeight: '700' }, subtitle: { color: colors.textMuted, marginTop: 8, lineHeight: 20 }, card: { backgroundColor: colors.card, borderColor: colors.border, borderWidth: 1, borderRadius: 14, padding: 14, marginBottom: 14 }, eventTitle: { color: colors.secondary, fontSize: 16, fontWeight: '700', marginBottom: 8 }, row: { borderTopColor: colors.border, borderTopWidth: 1, paddingVertical: 9 }, label: { color: colors.textMuted, fontSize: 12, marginTop: 8 }, value: { color: colors.text, fontSize: 15, fontWeight: '600', marginTop: 3 }, rawText: { color: colors.text, lineHeight: 20, marginTop: 4 }, note: { color: colors.textMuted, fontSize: 12, marginTop: 6 }, input: { color: colors.text, borderColor: colors.border, borderWidth: 1, borderRadius: 8, paddingHorizontal: 10, paddingVertical: 8, marginTop: 5 }, primary: { backgroundColor: colors.primary, borderRadius: 12, padding: 15, alignItems: 'center', marginTop: 8 }, primaryText: { color: '#fff', fontWeight: '700' }, secondary: { borderColor: colors.border, borderWidth: 1, borderRadius: 12, padding: 15, alignItems: 'center', marginTop: 10 }, home: { alignItems: 'center', padding: 15, marginTop: 10 }, secondaryText: { color: colors.text, fontWeight: '700' }, error: { color: '#dc2626', lineHeight: 20, marginVertical: 8 }, success: { color: colors.success, lineHeight: 20, marginVertical: 8, fontWeight: '600' }, muted: { color: colors.textMuted }, homeText: { color: colors.primary, marginTop: 12, fontWeight: '700' },
+  container: { flex: 1, backgroundColor: colors.background }, content: { padding: 20, paddingBottom: 40 }, empty: { flex: 1, justifyContent: 'center', alignItems: 'center' }, title: { color: colors.text, fontSize: 23, fontWeight: '700' }, subtitle: { color: colors.textMuted, marginTop: 8, lineHeight: 20 }, card: { backgroundColor: colors.card, borderColor: colors.border, borderWidth: 1, borderRadius: 14, padding: 14, marginBottom: 14 }, eventTitle: { color: colors.secondary, fontSize: 16, fontWeight: '700', marginBottom: 8 }, row: { borderTopColor: colors.border, borderTopWidth: 1, paddingVertical: 9 }, label: { color: colors.textMuted, fontSize: 12, marginTop: 8 }, value: { color: colors.text, fontSize: 15, fontWeight: '600', marginTop: 3 }, rawText: { color: colors.text, lineHeight: 20, marginTop: 4 }, note: { color: colors.textMuted, fontSize: 12, marginTop: 6 }, input: { color: colors.text, borderColor: colors.border, borderWidth: 1, borderRadius: 8, paddingHorizontal: 10, paddingVertical: 8, marginTop: 5 }, primary: { backgroundColor: colors.primary, borderRadius: 12, padding: 15, alignItems: 'center', marginTop: 8 }, primaryText: { color: '#fff', fontWeight: '700' }, secondary: { borderColor: colors.border, borderWidth: 1, borderRadius: 12, padding: 15, alignItems: 'center', marginTop: 10 }, home: { alignItems: 'center', padding: 15, marginTop: 10 }, secondaryText: { color: colors.primary, fontWeight: '700' }, error: { color: '#dc2626', lineHeight: 20, marginVertical: 8 }, success: { color: colors.success, lineHeight: 20, marginVertical: 8, fontWeight: '600' }, muted: { color: colors.textMuted }, homeText: { color: colors.primary, marginTop: 12, fontWeight: '700' },
 });

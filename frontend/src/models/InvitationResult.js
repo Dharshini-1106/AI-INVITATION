@@ -7,6 +7,7 @@ export class InvitationEvent {
     groom_name = '',
     date = '',
     time = '',
+    end_time = '',
     venue = '',
     address = '',
     contact_number = '',
@@ -18,6 +19,7 @@ export class InvitationEvent {
     this.groom_name = groom_name;
     this.date = date;
     this.time = time;
+    this.end_time = end_time;
     this.venue = venue;
     this.address = address;
     this.contact_number = contact_number;
@@ -25,9 +27,19 @@ export class InvitationEvent {
   }
 }
 
+// Model representing a person associated with the invitation
+export class Person {
+  constructor({ name = '', role = '' } = {}) {
+    this.name = name;
+    this.role = role;
+  }
+}
+
 // Model representing the full invitation understanding result
 export class InvitationResult {
   constructor({
+    invitation_mode = 'single',
+    people = [],
     event_name = '',
     event_type = '',
     bride_name = '',
@@ -46,6 +58,8 @@ export class InvitationResult {
     ocr_layout = [],
     processing_notes = [],
   } = {}) {
+    this.invitation_mode = invitation_mode;
+    this.people = (people || []).map((p) => new Person(p));
     this.event_name = event_name;
     this.event_type = event_type;
     this.bride_name = bride_name;

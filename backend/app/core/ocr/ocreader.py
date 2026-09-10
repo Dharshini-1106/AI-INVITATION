@@ -33,9 +33,9 @@ _TAMIL_LO = 0x0B80
 _TAMIL_HI = 0x0BFF
 
 # Thresholds for lightweight script detection.
-_DETECT_MAX_SIDE = 320
-_DETECT_TAMIL_THRESHOLD = 3
-_DETECT_ENGLISH_THRESHOLD = 5
+_DETECT_MAX_SIDE = 640
+_DETECT_TAMIL_THRESHOLD = 2
+_DETECT_ENGLISH_THRESHOLD = 3
 
 
 def _has_tamil(text: str) -> bool:
@@ -88,7 +88,7 @@ def _detect_script(image_path: str) -> tuple[str, float]:
         ocr = _get_paddleocr(
             "ta",
             det_model_name="PP-OCRv5_mobile_det",
-            rec_model_name="ta_PP-OCRv5_mobile_rec",
+            rec_model_name=            "ta_PP-OCRv5_mobile_rec",
         )
         if ocr is None:
             return "unknown", 0.0
@@ -149,6 +149,38 @@ def _maybe_repair_encoding(text: str) -> str:
         return repaired
     return text
 
+
+def paddle_result_is_valid(result) -> bool:
+    """Return True if a PaddleOCR result contains genuinely usable text.
+
+    This is a *positive* validity check (the inverse of the local
+    ``_is_unusable`` helper inside ``extract_text``).  It is intentionally
+    lenient enough not to reject valid Tamil OCR output: a result is only
+    considered invalid when it is None, empty, has no lines, has almost no
+    alphanumeric/Tamil content, or has extremely low average confidence
+    combined with almost no meaningful text.
+    """
+    if result is None:
+        return False
+    text = (result.text or "").strip()
+    if not text:
+        return False
+    if not result.lines:
+        return False
+    alnum_chars = sum(1 for ch in text if ch.isalnum())
+    tamil_chars = sum(1 for ch in text if 0x0B80 <= ord(ch) <= 0x0BFF)
+    # Require a minimum of meaningful content (alphanumeric or Tamil).
+    if alnum_chars + tamil_chars < 3:
+        return False
+    # Reject only when average confidence is extremely low AND there is
+    # almost no meaningful text.  This avoids discarding valid Tamil OCR
+    # that may have moderate per-line confidences.
+    confs = [float(c) for _, _, c in result.lines]
+    avg_conf = sum(confs) / len(confs) if confs else 0.0
+    if avg_conf < 0.1 and alnum_chars < 5 and tamil_chars < 3:
+        return False
+    return True
+
 # Language codes mapped to Paddle OCR language codes.
 PPOCR_LANGS = {
     "English": "en",
@@ -185,6 +217,15 @@ class OCRResult:
         self.selected_lines = []
         self.corrected_text = text
         self.ocr_diagnostics = {}
+        # Primary OCR output before merging/post-processing.
+        self.raw_ocr = text
+        # Safely normalized OCR text.
+        self.normalized_ocr = text
+        # Final OCR text after targeted Tamil re-OCR, merging, etc.
+        self.final_text = text
+        # Per-engine raw output preserved for debugging/compatibility.
+        self.paddle_raw_ocr = ""
+        self.rapidocr_raw_ocr = ""
 
 
 # ---------------------------------------------------------------------------
@@ -221,7 +262,8 @@ def _get_paddleocr(lang: str = "en", ocr_version: str = "PP-OCRv5", det_model_na
             use_doc_unwarping=False,
             use_textline_orientation=False,
             enable_mkldnn=False,
-            text_det_limit_side_len=960,
+            cpu_threads=4,
+            text_det_limit_side_len=736,
         )
         if det_model_name or rec_model_name:
             if det_model_name:
@@ -531,8 +573,64 @@ def _ocr_with_tamilocr(image_path: str) -> OCRResult:
 
 
 # ---------------------------------------------------------------------------
-# Rule-based fallback (simple contours)
+# Targeted Tamil re-OCR on a cropped region
 # ---------------------------------------------------------------------------
+def _crop_and_ocr_tamil(image_path: str, box: np.ndarray) -> OCRResult:
+    """Crop a detected Tamil region and run Tamil PaddleOCR on it.
+
+    Args:
+        image_path: Path to the full image.
+        box: 4-point bounding box (shape ``(4, 2)``) of the region to re-OCR.
+
+    The crop is padded slightly so the Tamil recognizer sees a little
+    surrounding context.  Invalid/tiny crops are rejected.  Any temporary
+    file created for the crop is cleaned up before returning.
+    """
+    import tempfile
+
+    from PIL import Image
+
+    try:
+        img = Image.open(image_path)
+    except Exception as exc:  # noqa: BLE001
+        raise RuntimeError(f"cannot open image for crop: {exc}")
+
+    xs = [float(p[0]) for p in box]
+    ys = [float(p[1]) for p in box]
+    x0, x1 = int(min(xs)), int(max(xs))
+    y0, y1 = int(min(ys)), int(max(ys))
+
+    # Small padding around the bounding box for recognizer context.
+    pad = 12
+    x0 = max(0, x0 - pad)
+    y0 = max(0, y0 - pad)
+    x1 = min(img.width, x1 + pad)
+    y1 = min(img.height, y1 + pad)
+
+    if x1 - x0 < 10 or y1 - y0 < 10:
+        raise RuntimeError("crop region too small for Tamil re-OCR")
+
+    tmp_path = None
+    try:
+        crop = img.crop((x0, y0, x1, y1))
+        fd, tmp_path = tempfile.mkstemp(suffix=".png")
+        os.close(fd)
+        crop.save(tmp_path, "PNG")
+        ocr_ta = _ocr_with_paddleocr(
+            tmp_path,
+            lang="ta",
+            det_model_name="PP-OCRv5_mobile_det",
+            rec_model_name="ta_PP-OCRv5_mobile_rec",
+        )
+        if not paddle_result_is_valid(ocr_ta):
+            raise RuntimeError("Tamil re-OCR on crop returned unusable text")
+        return ocr_ta
+    finally:
+        if tmp_path is not None:
+            try:
+                os.remove(tmp_path)
+            except Exception:
+                pass
 def _rule_based_fallback(image_path: str) -> OCRResult:
     """Fallback OCR using simple heuristics (works offline, low accuracy).
 
@@ -657,6 +755,17 @@ def extract_text(image_path: str, use_ppocr: bool = True, lang: str = "en",
         "ocr_route": "unknown",
         "english_ocr_executed": False,
         "tamil_ocr_executed": False,
+        "tamil_ocr_init_ok": False,
+        # Timing diagnostics (ms).  Stages handled in pipeline.py are filled
+        # there; the OCR-specific ones are filled here.
+        "preprocessing_ms": 0,
+        "detection_ms": 0,
+        "script_classification_ms": 0,
+        "paddleocr_recognition_ms": 0,
+        "targeted_tamil_ms": 0,
+        "rapidocr_fallback_ms": 0,
+        "parser_ms": 0,
+        "total_ms": 0,
     }
 
     # Capture version info
@@ -690,18 +799,12 @@ def extract_text(image_path: str, use_ppocr: bool = True, lang: str = "en",
             pass
 
     def _is_unusable(result: OCRResult) -> bool:
-        """Return True if the OCR result is genuinely unusable."""
-        if result is None:
-            return True
-        text = (result.text or "").strip()
-        if not text:
-            return True
-        if not result.lines:
-            return True
-        alnum_chars = sum(1 for ch in text if ch.isalnum())
-        if alnum_chars < 3:
-            return True
-        return False
+        """Return True if the OCR result is genuinely unusable.
+
+        Delegates to the module-level ``paddle_result_is_valid`` check so the
+        validity logic lives in one place and can be reused/tested.
+        """
+        return not paddle_result_is_valid(result)
 
     def _count_tamil(text: str) -> int:
         return sum(1 for ch in text if 0x0B80 <= ord(ch) <= 0x0BFF)
@@ -721,6 +824,7 @@ def extract_text(image_path: str, use_ppocr: bool = True, lang: str = "en",
     # ------------------------------------------------------------------
     # Step 0: Lightweight script detection (runs on downscaled image).
     # ------------------------------------------------------------------
+    _t_script_start = time.time()
     if use_ppocr and use_tamil_ocr:
         try:
             script_detected, script_confidence = _detect_script(image_path)
@@ -732,6 +836,7 @@ def extract_text(image_path: str, use_ppocr: bool = True, lang: str = "en",
             script_detected = "unknown"
             script_confidence = 0.0
             diagnostics["script_detection"] = "unknown"
+    diagnostics["script_classification_ms"] = int((time.time() - _t_script_start) * 1000)
 
     if script_detected == "tamil":
         ocr_route = "Tamil"
@@ -753,33 +858,47 @@ def extract_text(image_path: str, use_ppocr: bool = True, lang: str = "en",
     # ------------------------------------------------------------------
     # Step 1: PaddleOCR PRIMARY (routed by script detection)
     # ------------------------------------------------------------------
-    _tamil_ocr_start = None
-    _tamil_ocr_end = None
-    _english_ocr_start = None
-    _english_ocr_end = None
+    _t_paddle_ms = 0.0
+    _t_targeted_ms = 0.0
+
+    def _timed_paddleocr(path, **kw):
+        nonlocal _t_paddle_ms
+        _t0 = time.time()
+        try:
+            return _ocr_with_paddleocr(path, **kw)
+        finally:
+            _t_paddle_ms += time.time() - _t0
+
+    def _run_targeted_tamil(box):
+        """Time and run Tamil re-OCR on a single detected region crop."""
+        nonlocal _t_targeted_ms
+        _t0 = time.time()
+        try:
+            return _crop_and_ocr_tamil(image_path, box)
+        finally:
+            _t_targeted_ms += time.time() - _t0
 
     if use_ppocr:
-        # --- Tamil-only path: skip English OCR entirely ---
+        # --- Tamil-only path: PaddleOCR Tamil primary, no English pass ---
         if script_detected == "tamil":
             logger.info("English OCR: SKIPPED")
             logger.info("Tamil OCR: EXECUTED")
             diagnostics["english_ocr_executed"] = False
             diagnostics["tamil_ocr_executed"] = True
             try:
-                _tamil_ocr_start = time.time()
-                ocr_ta = _ocr_with_paddleocr(
+                ocr_ta = _timed_paddleocr(
                     image_path,
                     lang="ta",
                     det_model_name="PP-OCRv5_mobile_det",
                     rec_model_name="ta_PP-OCRv5_mobile_rec",
                 )
-                _tamil_ocr_end = time.time()
-                if not _is_unusable(ocr_ta):
+                if paddle_result_is_valid(ocr_ta):
                     paddle_result = ocr_ta
                     final_engine = "paddleocr-ta"
                     diagnostics["paddleocr_import_ok"] = True
                     diagnostics["paddleocr_init_ok"] = True
                     diagnostics["paddleocr_inference_ok"] = True
+                    diagnostics["tamil_ocr_init_ok"] = True
                     diagnostics["paddleocr_lines"] = len(ocr_ta.lines)
                     confs = [float(c) for _, _, c in ocr_ta.lines]
                     diagnostics["paddleocr_avg_confidence"] = (
@@ -804,10 +923,6 @@ def extract_text(image_path: str, use_ppocr: bool = True, lang: str = "en",
                             "bbox": box.tolist(),
                             "source": "paddleocr-ta",
                         })
-                    if _tamil_ocr_start and _tamil_ocr_end:
-                        diagnostics["tamil_inference_ms"] = int(
-                            (_tamil_ocr_end - _tamil_ocr_start) * 1000
-                        )
                 else:
                     diagnostics["rapidocr_fallback_reason"] = (
                         "Tamil PaddleOCR returned unusable/empty text"
@@ -816,16 +931,14 @@ def extract_text(image_path: str, use_ppocr: bool = True, lang: str = "en",
                 diagnostics["rapidocr_fallback_reason"] = f"Tamil PaddleOCR failed: {exc}"
                 logger.warning("Tamil PaddleOCR failed (%s)", exc)
 
-        # --- English-only path: skip Tamil OCR entirely ---
+        # --- English-only path: PaddleOCR English primary, no Tamil pass ---
         elif script_detected == "english":
             logger.info("English OCR: EXECUTED")
             logger.info("Tamil OCR: SKIPPED")
             diagnostics["english_ocr_executed"] = True
             diagnostics["tamil_ocr_executed"] = False
             try:
-                _english_ocr_start = time.time()
-                ocr_en = _ocr_with_paddleocr(image_path, lang="en")
-                _english_ocr_end = time.time()
+                ocr_en = _timed_paddleocr(image_path, lang="en")
                 if ocr_en is not None and hasattr(ocr_en, "paddlex_pipeline"):
                     try:
                         det_name = ocr_en.paddlex_pipeline.text_det_model.model_name
@@ -840,7 +953,7 @@ def extract_text(image_path: str, use_ppocr: bool = True, lang: str = "en",
                 diagnostics["paddleocr_avg_confidence"] = (
                     round(sum(confs) / len(confs), 4) if confs else 0.0
                 )
-                if not _is_unusable(ocr_en):
+                if paddle_result_is_valid(ocr_en):
                     paddle_result = ocr_en
                     final_engine = "paddleocr"
                     for (txt, box, conf) in ocr_en.lines:
@@ -858,83 +971,18 @@ def extract_text(image_path: str, use_ppocr: bool = True, lang: str = "en",
                 diagnostics["rapidocr_fallback_reason"] = f"English PaddleOCR failed: {exc}"
                 logger.warning("English PaddleOCR failed (%s)", exc)
 
-        # --- Mixed path: run Tamil first (faster), then English ---
+        # --- Mixed path: run BOTH English and Tamil PaddleOCR in parallel,
+        #     then merge.  This is necessary because the English model can
+        #     produce Latin garbage for Tamil text, which prevents the old
+        #     "targeted re-OCR only on Tamil-detected lines" approach from
+        #     ever triggering. ---
         elif script_detected == "mixed":
-            logger.info("Tamil OCR: EXECUTED")
-            logger.info("English OCR: EXECUTED")
+            logger.info("English OCR: EXECUTED (mixed)")
+            logger.info("Tamil OCR: EXECUTED (mixed)")
             diagnostics["english_ocr_executed"] = True
             diagnostics["tamil_ocr_executed"] = True
             try:
-                _tamil_ocr_start = time.time()
-                ocr_ta = _ocr_with_paddleocr(
-                    image_path,
-                    lang="ta",
-                    det_model_name="PP-OCRv5_mobile_det",
-                    rec_model_name="ta_PP-OCRv5_mobile_rec",
-                )
-                _tamil_ocr_end = time.time()
-                if not _is_unusable(ocr_ta):
-                    paddle_result = ocr_ta
-                    final_engine = "paddleocr-ta"
-                    diagnostics["paddleocr_import_ok"] = True
-                    diagnostics["paddleocr_init_ok"] = True
-                    diagnostics["paddleocr_inference_ok"] = True
-                    diagnostics["paddleocr_lines"] = len(ocr_ta.lines)
-                    confs = [float(c) for _, _, c in ocr_ta.lines]
-                    diagnostics["paddleocr_avg_confidence"] = (
-                        round(sum(confs) / len(confs), 4) if confs else 0.0
-                    )
-                    diagnostics["tamil_model_name"] = "ta_PP-OCRv5_mobile_rec"
-                    try:
-                        rec_name = ocr_ta.paddlex_pipeline.text_rec_model.model_name
-                        diagnostics["tamil_model_name"] = str(rec_name)
-                    except Exception:
-                        pass
-                    try:
-                        det_name = ocr_ta.paddlex_pipeline.text_det_model.model_name
-                        diagnostics["detector_model_name"] = str(det_name)
-                    except Exception:
-                        pass
-                    for (txt, box, conf) in ocr_ta.lines:
-                        repaired = _maybe_repair_encoding(str(txt))
-                        raw_results.append({
-                            "text": repaired,
-                            "confidence": float(conf),
-                            "bbox": box.tolist(),
-                            "source": "paddleocr-ta",
-                        })
-                    if _tamil_ocr_start and _tamil_ocr_end:
-                        diagnostics["tamil_inference_ms"] = int(
-                            (_tamil_ocr_end - _tamil_ocr_start) * 1000
-                        )
-            except Exception as exc:
-                logger.warning("Tamil PaddleOCR failed (%s)", exc)
-            # English OCR follows for mixed content
-            try:
-                _english_ocr_start = time.time()
-                ocr_en = _ocr_with_paddleocr(image_path, lang="en")
-                _english_ocr_end = time.time()
-                if not _is_unusable(ocr_en):
-                    for (txt, box, conf) in ocr_en.lines:
-                        raw_results.append({
-                            "text": str(txt),
-                            "confidence": float(conf),
-                            "bbox": box.tolist(),
-                            "source": "paddleocr",
-                        })
-            except Exception as exc:
-                logger.warning("English PaddleOCR failed (%s)", exc)
-
-        # --- Unknown/uncertain: safe fallback (current behavior) ---
-        else:
-            logger.info("English OCR: EXECUTED (safe fallback)")
-            logger.info("Tamil OCR: CONDITIONAL")
-            diagnostics["english_ocr_executed"] = True
-            diagnostics["tamil_ocr_executed"] = True
-            try:
-                _english_ocr_start = time.time()
-                ocr_en = _ocr_with_paddleocr(image_path, lang=lang)
-                _english_ocr_end = time.time()
+                ocr_en = _timed_paddleocr(image_path, lang="en")
                 if ocr_en is not None and hasattr(ocr_en, "paddlex_pipeline"):
                     try:
                         det_name = ocr_en.paddlex_pipeline.text_det_model.model_name
@@ -944,12 +992,12 @@ def extract_text(image_path: str, use_ppocr: bool = True, lang: str = "en",
                 diagnostics["paddleocr_import_ok"] = True
                 diagnostics["paddleocr_init_ok"] = True
                 diagnostics["paddleocr_inference_ok"] = True
-                diagnostics["paddleocr_lines"] = len(ocr_en.lines)
-                confs = [float(c) for _, _, c in ocr_en.lines]
+                diagnostics["paddleocr_lines"] = len(ocr_en.lines) if ocr_en else 0
+                confs = [float(c) for _, _, c in (ocr_en.lines or [])]
                 diagnostics["paddleocr_avg_confidence"] = (
                     round(sum(confs) / len(confs), 4) if confs else 0.0
                 )
-                if not _is_unusable(ocr_en):
+                if ocr_en is not None and paddle_result_is_valid(ocr_en):
                     paddle_result = ocr_en
                     final_engine = "paddleocr"
                     for (txt, box, conf) in ocr_en.lines:
@@ -961,73 +1009,134 @@ def extract_text(image_path: str, use_ppocr: bool = True, lang: str = "en",
                         })
                 else:
                     diagnostics["rapidocr_fallback_reason"] = (
-                        "PaddleOCR returned unusable/empty text"
+                        "English PaddleOCR (mixed) returned unusable/empty text"
                     )
             except Exception as exc:
-                diagnostics["rapidocr_fallback_reason"] = f"PaddleOCR inference failed: {exc}"
-                logger.warning("PaddleOCR failed (%s)", exc)
-            # Conditional Tamil OCR for uncertain cases
-            if paddle_result is not None and use_tamil_ocr and lang != "ta":
-                en_text = paddle_result.text or ""
-                en_tamil_count = _count_tamil(en_text)
-                if en_tamil_count == 0:
+                diagnostics["rapidocr_fallback_reason"] = f"English PaddleOCR (mixed) failed: {exc}"
+                logger.warning("English PaddleOCR (mixed) failed (%s)", exc)
+
+            # Full Tamil PaddleOCR pass for mixed invitations
+            try:
+                ocr_ta = _timed_paddleocr(
+                    image_path,
+                    lang="ta",
+                    det_model_name="PP-OCRv5_mobile_det",
+                    rec_model_name="ta_PP-OCRv5_mobile_rec",
+                )
+                diagnostics["tamil_ocr_executed"] = True
+                diagnostics["tamil_model_name"] = "ta_PP-OCRv5_mobile_rec"
+                try:
+                    rec_name = ocr_ta.paddlex_pipeline.text_rec_model.model_name
+                    diagnostics["tamil_model_name"] = str(rec_name)
+                except Exception:
+                    pass
+                try:
+                    det_name = ocr_ta.paddlex_pipeline.text_det_model.model_name
+                    if not diagnostics.get("detector_model_name") or diagnostics.get("detector_model_name") == "N/A":
+                        diagnostics["detector_model_name"] = str(det_name)
+                except Exception:
+                    pass
+                if ocr_ta is not None and paddle_result_is_valid(ocr_ta):
+                    diagnostics["tamil_ocr_init_ok"] = True
+                    if paddle_result is None:
+                        paddle_result = ocr_ta
+                        final_engine = "paddleocr-ta"
+                    for (txt, box, conf) in ocr_ta.lines:
+                        repaired = _maybe_repair_encoding(str(txt))
+                        raw_results.append({
+                            "text": repaired,
+                            "confidence": float(conf),
+                            "bbox": box.tolist(),
+                            "source": "paddleocr-ta",
+                        })
+            except Exception as exc:
+                logger.warning("Tamil PaddleOCR (mixed) failed (%s)", exc)
+
+        # --- Unknown/uncertain: run BOTH English and Tamil PaddleOCR in
+        #     parallel, then merge.  This ensures Tamil text is not missed
+        #     when the script detector is uncertain. ---
+        else:
+            logger.info("English OCR: EXECUTED (unknown script)")
+            logger.info("Tamil OCR: EXECUTED (unknown script)")
+            diagnostics["english_ocr_executed"] = True
+            diagnostics["tamil_ocr_executed"] = True
+            try:
+                ocr_en = _timed_paddleocr(image_path, lang=lang)
+                if ocr_en is not None and hasattr(ocr_en, "paddlex_pipeline"):
                     try:
-                        _tamil_ocr_start = time.time()
-                        _ta_ocr_obj = _get_paddleocr(
-                            lang="ta",
-                            det_model_name="PP-OCRv5_mobile_det",
-                            rec_model_name="ta_PP-OCRv5_mobile_rec",
-                        )
-                        _tamil_ocr_end = time.time()
-                        if _ta_ocr_obj is not None:
-                            diagnostics["tamil_model_name"] = "ta_PP-OCRv5_mobile_rec"
-                            try:
-                                rec_name = _ta_ocr_obj.paddlex_pipeline.text_rec_model.model_name
-                                diagnostics["tamil_model_name"] = str(rec_name)
-                            except Exception:
-                                pass
-                            try:
-                                det_name = _ta_ocr_obj.paddlex_pipeline.text_det_model.model_name
-                                diagnostics["detector_model_name"] = str(det_name)
-                            except Exception:
-                                pass
-                        if _ta_ocr_obj is not None:
-                            ocr_ta = _ocr_with_paddleocr(
-                                image_path,
-                                lang="ta",
-                                det_model_name="PP-OCRv5_mobile_det",
-                                rec_model_name="ta_PP-OCRv5_mobile_rec",
-                            )
-                        else:
-                            ocr_ta = None
-                        if not _is_unusable(ocr_ta):
-                            ta_text = ocr_ta.text or ""
-                            ta_tamil_count = _count_tamil(ta_text)
-                            if ta_tamil_count > en_tamil_count:
-                                paddle_result = ocr_ta
-                                final_engine = "paddleocr-ta"
-                                raw_results = []
-                                for (txt, box, conf) in ocr_ta.lines:
-                                    repaired = _maybe_repair_encoding(str(txt))
-                                    tc = _count_tamil(repaired)
-                                    if tc >= 2 or (float(conf) >= 0.85 and len(repaired) > 2):
-                                        raw_results.append({
-                                            "text": repaired,
-                                            "confidence": float(conf),
-                                            "bbox": box.tolist(),
-                                            "source": "paddleocr-ta",
-                                        })
-                                diagnostics["paddleocr_lines"] = len(ocr_ta.lines)
-                                confs = [float(c) for _, _, c in ocr_ta.lines]
-                                diagnostics["paddleocr_avg_confidence"] = (
-                                    round(sum(confs) / len(confs), 4) if confs else 0.0
-                                )
-                                if _tamil_ocr_start and _tamil_ocr_end:
-                                    diagnostics["tamil_inference_ms"] = int(
-                                        (_tamil_ocr_end - _tamil_ocr_start) * 1000
-                                    )
-                    except Exception as exc:
-                        logger.warning("PaddleOCR Tamil failed (%s)", exc)
+                        det_name = ocr_en.paddlex_pipeline.text_det_model.model_name
+                        diagnostics["detector_model_name"] = str(det_name)
+                    except Exception:
+                        pass
+                diagnostics["paddleocr_import_ok"] = True
+                diagnostics["paddleocr_init_ok"] = True
+                diagnostics["paddleocr_inference_ok"] = True
+                diagnostics["paddleocr_lines"] = len(ocr_en.lines) if ocr_en else 0
+                confs = [float(c) for _, _, c in (ocr_en.lines or [])]
+                diagnostics["paddleocr_avg_confidence"] = (
+                    round(sum(confs) / len(confs), 4) if confs else 0.0
+                )
+                if ocr_en is not None and paddle_result_is_valid(ocr_en):
+                    paddle_result = ocr_en
+                    final_engine = "paddleocr"
+                    for (txt, box, conf) in ocr_en.lines:
+                        raw_results.append({
+                            "text": str(txt),
+                            "confidence": float(conf),
+                            "bbox": box.tolist(),
+                            "source": "paddleocr",
+                        })
+                else:
+                    diagnostics["rapidocr_fallback_reason"] = (
+                        "PaddleOCR (unknown script) returned unusable/empty text"
+                    )
+            except Exception as exc:
+                diagnostics["rapidocr_fallback_reason"] = f"PaddleOCR (unknown script) failed: {exc}"
+                logger.warning("PaddleOCR (unknown script) failed (%s)", exc)
+
+            # Full Tamil PaddleOCR pass for unknown-script invitations
+            try:
+                ocr_ta = _timed_paddleocr(
+                    image_path,
+                    lang="ta",
+                    det_model_name="PP-OCRv5_mobile_det",
+                    rec_model_name="ta_PP-OCRv5_mobile_rec",
+                )
+                diagnostics["tamil_ocr_executed"] = True
+                diagnostics["tamil_model_name"] = "ta_PP-OCRv5_mobile_rec"
+                try:
+                    rec_name = ocr_ta.paddlex_pipeline.text_rec_model.model_name
+                    diagnostics["tamil_model_name"] = str(rec_name)
+                except Exception:
+                    pass
+                try:
+                    det_name = ocr_ta.paddlex_pipeline.text_det_model.model_name
+                    if not diagnostics.get("detector_model_name") or diagnostics.get("detector_model_name") == "N/A":
+                        diagnostics["detector_model_name"] = str(det_name)
+                except Exception:
+                    pass
+                if ocr_ta is not None and paddle_result_is_valid(ocr_ta):
+                    diagnostics["tamil_ocr_init_ok"] = True
+                    if paddle_result is None:
+                        paddle_result = ocr_ta
+                        final_engine = "paddleocr-ta"
+                    for (txt, box, conf) in ocr_ta.lines:
+                        repaired = _maybe_repair_encoding(str(txt))
+                        raw_results.append({
+                            "text": repaired,
+                            "confidence": float(conf),
+                            "bbox": box.tolist(),
+                            "source": "paddleocr-ta",
+                        })
+            except Exception as exc:
+                logger.warning("Tamil PaddleOCR (unknown) failed (%s)", exc)
+
+    # Record PaddleOCR recognition + targeted Tamil timing.
+    diagnostics["paddleocr_recognition_ms"] = int(_t_paddle_ms * 1000)
+    diagnostics["targeted_tamil_ms"] = int(_t_targeted_ms * 1000)
+    # Back-compat: keep tamil_inference_ms populated when a Tamil model ran.
+    if diagnostics["tamil_ocr_executed"]:
+        diagnostics["tamil_inference_ms"] = diagnostics["paddleocr_recognition_ms"] + diagnostics["targeted_tamil_ms"]
 
     # ------------------------------------------------------------------
     # Step 3: RapidOCR FALLBACK ONLY (only if PaddleOCR failed completely)
@@ -1117,22 +1226,39 @@ def extract_text(image_path: str, use_ppocr: bool = True, lang: str = "en",
         logger.info("RapidOCR fallback reason: %s", diagnostics["rapidocr_fallback_reason"])
     logger.info("FINAL OCR ENGINE: %s", diagnostics["final_engine"])
     logger.info("Tamil model name: %s", diagnostics["tamil_model_name"])
+    logger.info("Tamil OCR init ok: %s", diagnostics["tamil_ocr_init_ok"])
     logger.info("Tamil dictionary path: %s", diagnostics["tamil_dictionary_path"])
     logger.info("Tamil dictionary has Unicode: %s", diagnostics["tamil_dictionary_has_unicode"])
     logger.info("Tamil inference ms: %d", diagnostics["tamil_inference_ms"])
     logger.info("Detector model name: %s", diagnostics["detector_model_name"])
+    tamil_lines = [item for item in raw_results if item.get("source", "").startswith("paddleocr-ta")]
+    logger.info("Tamil OCR lines: %d", len(tamil_lines))
+    if tamil_lines:
+        tamil_confs = [float(item.get("confidence", 0.0)) for item in tamil_lines]
+        logger.info("Tamil OCR avg confidence: %.4f", round(sum(tamil_confs) / len(tamil_confs), 4))
+        preview = "\n".join(item.get("text", "") for item in tamil_lines[:5])
+        logger.info("Tamil OCR first lines:\n%s", preview)
 
     # ------------------------------------------------------------------
     # Cluster raw_results into groups based on bbox IoU / spatial proximity.
+    #
+    # Short text lines (e.g. "Party", "30TH", "AT 8 PM") must not be merged
+    # with neighbouring longer lines.  We therefore use stricter proximity
+    # rules for short boxes and require meaningful vertical overlap before
+    # merging boxes that are not horizontally aligned.
     # ------------------------------------------------------------------
     clusters = []  # each cluster: {boxes: [...], items: [raw_item]}
     for item in raw_results:
         box = np.array(item["bbox"], dtype=np.float32)
+        box_h = float(box[:, 1].max() - box[:, 1].min())
+        box_w = float(box[:, 0].max() - box[:, 0].min())
         placed = False
         for c in clusters:
             rep_box = c["boxes"][0]
+            rep_h = float(rep_box[:, 1].max() - rep_box[:, 1].min())
+            rep_w = float(rep_box[:, 0].max() - rep_box[:, 0].min())
             iou = _box_iou(rep_box, box)
-            if iou >= 0.2:
+            if iou >= 0.25:
                 c["boxes"].append(box)
                 c["items"].append(item)
                 placed = True
@@ -1141,9 +1267,16 @@ def extract_text(image_path: str, use_ppocr: bool = True, lang: str = "en",
             cy1 = float((rep_box[:, 1].min() + rep_box[:, 1].max()) / 2.0)
             cx2 = float((box[:, 0].min() + box[:, 0].max()) / 2.0)
             cy2 = float((box[:, 1].min() + box[:, 1].max()) / 2.0)
-            dist = ((cx1 - cx2) ** 2 + (cy1 - cy2) ** 2) ** 0.5
-            hrep = float(rep_box[:, 1].max() - rep_box[:, 1].min())
-            if hrep > 0 and dist < max(20.0, hrep * 0.6):
+            dx = abs(cx1 - cx2)
+            dy = abs(cy1 - cy2)
+            max_h = max(rep_h, box_h)
+            # Short lines need tighter vertical proximity to avoid swallowing
+            # neighbouring headings like "Party" or "30TH".
+            if max_h < 25.0:
+                proximity = max(8.0, max_h * 0.35)
+            else:
+                proximity = max(12.0, max_h * 0.45)
+            if dy < proximity and dx < max(rep_w, box_w) * 0.9:
                 c["boxes"].append(box)
                 c["items"].append(item)
                 placed = True
@@ -1191,13 +1324,35 @@ def extract_text(image_path: str, use_ppocr: bool = True, lang: str = "en",
 
     out_lines = []
     text_parts = []
+    seen_texts = set()
     for m in merged:
+        box_arr = np.array(m.get("bbox", [[0, 0], [0, 0], [0, 0], [0, 0]]), dtype=np.float32)
+        # Output the selected text first.
         sel = m.get("selected", {})
         t = sel.get("text", "")
         conf = float(sel.get("confidence", 0.0))
-        box_arr = np.array(m.get("bbox", [[0, 0], [0, 0], [0, 0], [0, 0]]), dtype=np.float32)
-        out_lines.append((t, box_arr, conf))
-        text_parts.append(t)
+        if t and t.strip():
+            key = t.strip().lower()
+            if key not in seen_texts:
+                seen_texts.add(key)
+                out_lines.append((t.strip(), box_arr, conf))
+                text_parts.append(t.strip())
+        # Also preserve any short supplementary candidates that were merged
+        # into this cluster but lost during selection (e.g. "Party" next to
+        # "Birthday", or "30TH" next to a longer line).
+        for cand in m.get("candidates", []):
+            ct = cand.get("text", "")
+            if not ct or not ct.strip():
+                continue
+            ckey = ct.strip().lower()
+            if ckey in seen_texts:
+                continue
+            # Only preserve short lines that are clearly separate fragments.
+            cwords = ct.strip().split()
+            if len(cwords) <= 3 and len(ct.strip()) <= 20:
+                seen_texts.add(ckey)
+                out_lines.append((ct.strip(), box_arr, float(cand.get("confidence", 0.0))))
+                text_parts.append(ct.strip())
 
     merged_text = "\n".join(text_parts) if text_parts else ""
 

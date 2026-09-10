@@ -1,4 +1,4 @@
-import { InvitationResult } from '../models/InvitationResult';
+import { InvitationResult, Person } from '../models/InvitationResult';
 
 const STORAGE_KEY = 'invitation-sense-last-result';
 
@@ -14,10 +14,22 @@ function toEventShape(value) {
     groom_name: value.groom_name || '',
     date: value.date || '',
     time: value.time || '',
+    end_time: value.end_time || '',
     venue: value.venue || '',
     address: value.address || '',
     contact_number: value.contact_number || '',
     confidence: value.confidence || 0,
+  };
+}
+
+function toPersonShape(value) {
+  if (!value || typeof value !== 'object') {
+    return null;
+  }
+
+  return {
+    name: value.name || '',
+    role: value.role || '',
   };
 }
 
@@ -40,6 +52,8 @@ export function normalizeResultPayload(payload) {
     : null;
 
   return new InvitationResult({
+    invitation_mode: source.invitation_mode || 'single',
+    people: Array.isArray(source.people) ? source.people.map(toPersonShape).filter(Boolean) : [],
     event_name: source.event_name || firstEvent?.event_name || '',
     event_type: source.event_type || firstEvent?.event_type || '',
     bride_name: source.bride_name || firstEvent?.bride_name || '',

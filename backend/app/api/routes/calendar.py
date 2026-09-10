@@ -1,7 +1,9 @@
 """Google Calendar integration endpoints."""
 import logging
+import re
 import secrets
 import time
+from datetime import datetime
 from typing import List, Optional
 
 import requests
@@ -22,6 +24,35 @@ GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token"
 # In-memory token store: session_id -> {access_token, refresh_token, expires_at}
 # NOTE: For production, replace with a database (e.g., PostgreSQL/Redis).
 _tokens: dict[str, dict] = {}
+
+
+def _to_iso_datetime(date_str: str, time_str: str) -> dict:
+    """Convert parser date/time strings to a Google Calendar start/end dict."""
+    date_str = (date_str or "").strip()
+    time_str = (time_str or "").strip()
+    dt = None
+    iso_date = None
+    if date_str:
+        for fmt in ("%B %d, %Y", "%b %d, %Y", "%Y-%m-%d", "%m/%d/%Y", "%d/%m/%Y"):
+            try:
+                dt = datetime.strptime(date_str, fmt)
+                iso_date = dt.strftime("%Y-%m-%d")
+                break
+            except ValueError:
+                continue
+    if not dt:
+        return {"dateTime": date_str} if date_str else {}
+    if not time_str:
+        return {"date": iso_date}
+    clean_time = re.sub(r"\bonwards?\b", "", time_str, flags=re.IGNORECASE).strip()
+    for fmt in ("%I:%M %p", "%I:%M%p", "%H:%M"):
+        try:
+            t = datetime.strptime(clean_time, fmt)
+            dt = dt.replace(hour=t.hour, minute=t.minute)
+            break
+        except ValueError:
+            continue
+    return {"dateTime": dt.strftime("%Y-%m-%dT%H:%M:%S")}
 
 
 def _usable(value) -> bool:
@@ -69,20 +100,33 @@ def _refresh_token(refresh_token: str) -> Optional[dict]:
 
 
 def _calendar_event_payload(event: Event) -> dict:
-    start_dt = event.startDateTime or event.dateTime or event.date
-    end_dt = event.endDateTime or event.endTime
+    start_dt = _to_iso_datetime(event.date, event.time)
+    end_dt = _to_iso_datetime(event.date, event.end_time) if event.end_time else {}
+
+    if not end_dt and start_dt:
+        if "dateTime" in start_dt:
+            start_dt_obj = datetime.strptime(start_dt["dateTime"], "%Y-%m-%dT%H:%M:%S")
+            end_dt_obj = start_dt_obj.replace(hour=(start_dt_obj.hour + 1) % 24)
+            if end_dt_obj <= start_dt_obj:
+                end_dt_obj = end_dt_obj.replace(day=end_dt_obj.day + 1)
+            end_dt = {"dateTime": end_dt_obj.strftime("%Y-%m-%dT%H:%M:%S")}
+        elif "date" in start_dt:
+            start_dt_obj = datetime.strptime(start_dt["date"], "%Y-%m-%d")
+            end_dt_obj = start_dt_obj.replace(day=start_dt_obj.day + 1)
+            end_dt = {"date": end_dt_obj.strftime("%Y-%m-%d")}
 
     payload = {
         "summary": event.summary or event.event_name or event.event_type or "Invitation Event",
-        "start": {"dateTime": start_dt},
-        "end": {"dateTime": end_dt or ""},
+        "start": start_dt or {"date": event.date},
     }
+    if end_dt:
+        payload["end"] = end_dt
 
-    location_parts = [p for p in [event.location, event.address, event.venue] if _usable(p)]
+    location_parts = [p for p in [event.venue, event.address, event.location] if _usable(p)]
     if location_parts:
         payload["location"] = ", ".join(location_parts)
 
-    notes_parts = [p for p in [event.event_type, event.description, event.notes] if _usable(p)]
+    notes_parts = [p for p in [event.event_type, event.description, event.occasion_detail] if _usable(p)]
     if notes_parts:
         payload["description"] = "\n".join(notes_parts)
 

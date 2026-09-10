@@ -16,6 +16,8 @@ import logging
 import re
 from typing import Dict, List, Optional
 
+from ...config import settings
+
 logger = logging.getLogger(__name__)
 
 # Field descriptions (semantic anchors used for embedding/matching).
@@ -46,8 +48,10 @@ _sbert_available = False
 
 
 def _get_sbert():
-    """Lazily load Sentence-BERT if available."""
+    """Lazily load Sentence-BERT if available and enabled."""
     global _sbert_model, _sbert_available
+    if not settings.use_sbert:
+        return None
     if _sbert_model is not None:
         return _sbert_model
     try:
@@ -164,9 +168,12 @@ def _rule_match(entities: List[object]) -> Dict[str, str]:
 def match_entities_to_fields(entities: List[object]) -> Dict[str, str]:
     """Map extracted entities to invitation fields.
 
-    Uses Sentence-BERT semantic matching when available, otherwise falls back
-    to a type-based rule mapping. Returns a dict of field -> value.
+    Uses Sentence-BERT semantic matching when available and enabled,
+    otherwise falls back to a type-based rule mapping. Returns a dict of
+    field -> value.
     """
+    if not settings.use_matching:
+        return _rule_match(entities)
     if _sbert_available:
         matched = _sbert_match_option_with_fields(entities)
         if matched:

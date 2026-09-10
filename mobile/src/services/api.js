@@ -104,6 +104,7 @@ async function analyzeInvitation(imageAsset) {
   if (imageAsset.source === 'camera') headers['X-Invitation-Source'] = 'camera';
   const res = await c.post('/analyze', formData, {
     headers,
+    timeout: API_CONFIG.analyzeTimeout || 600000,
   });
   console.log('[MOBILE] Extraction completed');
   return new InvitationResult(res.data);
