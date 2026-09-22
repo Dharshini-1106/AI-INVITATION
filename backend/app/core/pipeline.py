@@ -123,7 +123,7 @@ def run_pipeline(image_bytes: bytes, filename: str, source: str = "gallery") -> 
     # full rapidocr fallback.
     # ------------------------------------------------------------------
     original_ocr = None
-    if enhanced_ocr is not None:
+    if settings.use_dual_ocr and enhanced_ocr is not None:
         try:
             original_ocr = _ocr_one(img)
         except Exception as exc:
@@ -315,9 +315,13 @@ def run_pipeline(image_bytes: bytes, filename: str, source: str = "gallery") -> 
         "groom_name": parsed.get("groom_name", ""),
         "date": parsed.get("date", ""),
         "time": parsed.get("time", ""),
+        "end_time": parsed.get("end_time", ""),
         "venue": parsed.get("venue", ""),
         "address": parsed.get("address", ""),
         "contact_number": parsed.get("contact_number", ""),
+        "additional_information": parsed.get("additional_information", ""),
+        "birthday_age": parsed.get("birthday_age", ""),
+        "printed_weekday": parsed.get("printed_weekday", ""),
         "language": language,
         "confidence_score": final_confidence,
         "number_of_events": parsed.get("number_of_events", 1),

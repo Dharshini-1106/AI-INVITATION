@@ -22,6 +22,11 @@ export async function getPipelineStages() {
   return res.data;
 }
 
+export async function planTravel(payload) {
+  const res = await client.post(API_CONFIG.endpoints.travelPlan, payload);
+  return res.data;
+}
+
 // Upload & analyze an invitation image
 export async function analyzeInvitation(file) {
   const formData = new FormData();
@@ -41,6 +46,7 @@ export function getApiBaseUrl() {
 export default {
   checkHealth,
   getPipelineStages,
+  planTravel,
   analyzeInvitation,
   getApiBaseUrl,
 };

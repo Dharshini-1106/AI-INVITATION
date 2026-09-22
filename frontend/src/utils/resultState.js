@@ -18,6 +18,10 @@ function toEventShape(value) {
     venue: value.venue || '',
     address: value.address || '',
     contact_number: value.contact_number || '',
+    timezone: value.timezone || '',
+    additional_information: value.additional_information || '',
+    birthday_age: value.birthday_age || '',
+    printed_weekday: value.printed_weekday || '',
     confidence: value.confidence || 0,
   };
 }
@@ -63,6 +67,7 @@ export function normalizeResultPayload(payload) {
     venue: source.venue || firstEvent?.venue || '',
     address: source.address || firstEvent?.address || '',
     contact_number: source.contact_number || firstEvent?.contact_number || '',
+    timezone: source.timezone || firstEvent?.timezone || '',
     language: source.language || '',
     confidence_score: source.confidence_score ?? source.confidence ?? 0,
     number_of_events: source.number_of_events ?? (Array.isArray(source.events) ? source.events.length : 1),
@@ -70,6 +75,11 @@ export function normalizeResultPayload(payload) {
     quality: source.quality || {},
     raw_text: source.raw_text || '',
     ocr_layout: Array.isArray(source.ocr_layout) ? source.ocr_layout : [],
+    ocr_engine: source.ocr_engine || '',
+    ocr_confidence: source.ocr_confidence ?? null,
+    tamil_character_count: source.tamil_character_count ?? 0,
+    english_character_count: source.english_character_count ?? 0,
+    fallback_used: source.fallback_used || false,
     processing_notes: source.processing_notes || [],
   });
 }

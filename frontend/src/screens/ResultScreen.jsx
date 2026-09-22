@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import colors from '../theme/colors';
 import { loadAnalysisResult, normalizeResultPayload } from '../utils/resultState';
+import TravelPlanModal from '../components/TravelPlanModal';
 
 const FIELD_ICONS = {
   event_name: '🎉',
@@ -31,6 +32,7 @@ function EventCard({ event, index }) {
     { key: 'event_name', label: 'Event Name' },
     { key: 'event_type', label: 'Event Type' },
     { key: 'date', label: 'Date' },
+    { key: 'printed_weekday', label: 'Day' },
     { key: 'time', label: 'Time' },
     { key: 'end_time', label: 'End Time' },
     { key: 'venue', label: 'Venue' },
@@ -53,6 +55,7 @@ function EventCard({ event, index }) {
           </div>
         ))}
       </div>
+      <TravelPlanModal event={event} />
     </div>
   );
 }
@@ -142,6 +145,26 @@ function ResultScreen() {
         <div style={styles.statCard}>
           <span style={styles.statLabel}>Language</span>
           <span style={styles.statValue}>{normalizedResult.language || '—'}</span>
+        </div>
+      </div>
+
+      <div style={styles.ocrCard}>
+        <h2 style={styles.sectionTitle}>OCR Details</h2>
+        <div style={styles.ocrGrid}>
+          <span style={styles.ocrLabel}>Engine</span>
+          <span style={styles.ocrValue}>{normalizedResult.ocr_engine || 'Not available'}</span>
+          <span style={styles.ocrLabel}>Confidence</span>
+          <span style={styles.ocrValue}>
+            {normalizedResult.ocr_confidence == null
+              ? 'Not available'
+              : `${Math.round(normalizedResult.ocr_confidence * 100)}%`}
+          </span>
+          <span style={styles.ocrLabel}>Tamil / English characters</span>
+          <span style={styles.ocrValue}>
+            {normalizedResult.tamil_character_count || 0} / {normalizedResult.english_character_count || 0}
+          </span>
+          <span style={styles.ocrLabel}>Fallback used</span>
+          <span style={styles.ocrValue}>{normalizedResult.fallback_used ? 'Yes' : 'No'}</span>
         </div>
       </div>
 
@@ -246,6 +269,10 @@ const styles = {
   },
   statLabel: { fontSize: '12px', color: colors.textMuted },
   statValue: { fontSize: '18px', fontWeight: 700, color: colors.secondary },
+  ocrCard: { background: colors.card, border: `1px solid ${colors.border}`, borderRadius: '14px', padding: '14px 16px', marginBottom: '20px' },
+  ocrGrid: { display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) minmax(0, 1fr)', gap: '8px 16px', fontSize: '13px' },
+  ocrLabel: { color: colors.textMuted },
+  ocrValue: { color: colors.text, fontWeight: 600, textAlign: 'right', overflowWrap: 'anywhere' },
   section: { marginBottom: '20px' },
   sectionTitle: { fontSize: '16px', fontWeight: 700, color: colors.text, marginBottom: '10px' },
   peopleList: { display: 'flex', flexDirection: 'column', gap: '8px' },

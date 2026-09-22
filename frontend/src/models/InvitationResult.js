@@ -11,6 +11,10 @@ export class InvitationEvent {
     venue = '',
     address = '',
     contact_number = '',
+    timezone = '',
+    additional_information = '',
+    birthday_age = '',
+    printed_weekday = '',
     confidence = 0,
   } = {}) {
     this.event_name = event_name;
@@ -23,6 +27,10 @@ export class InvitationEvent {
     this.venue = venue;
     this.address = address;
     this.contact_number = contact_number;
+    this.timezone = timezone;
+    this.additional_information = additional_information;
+    this.birthday_age = birthday_age;
+    this.printed_weekday = printed_weekday;
     this.confidence = confidence;
   }
 }
@@ -49,6 +57,7 @@ export class InvitationResult {
     venue = '',
     address = '',
     contact_number = '',
+    timezone = '',
     language = '',
     confidence_score = 0,
     number_of_events = 1,
@@ -56,6 +65,11 @@ export class InvitationResult {
     quality = {},
     raw_text = '',
     ocr_layout = [],
+    ocr_engine = '',
+    ocr_confidence = null,
+    tamil_character_count = 0,
+    english_character_count = 0,
+    fallback_used = false,
     processing_notes = [],
   } = {}) {
     this.invitation_mode = invitation_mode;
@@ -69,6 +83,7 @@ export class InvitationResult {
     this.venue = venue;
     this.address = address;
     this.contact_number = contact_number;
+    this.timezone = timezone;
     this.language = language;
     this.confidence_score = confidence_score;
     this.number_of_events = number_of_events;
@@ -76,6 +91,11 @@ export class InvitationResult {
     this.quality = quality || {};
     this.raw_text = raw_text;
     this.ocr_layout = ocr_layout || [];
+    this.ocr_engine = ocr_engine;
+    this.ocr_confidence = ocr_confidence;
+    this.tamil_character_count = tamil_character_count;
+    this.english_character_count = english_character_count;
+    this.fallback_used = fallback_used;
     this.processing_notes = processing_notes || [];
   }
 
@@ -93,6 +113,7 @@ export class InvitationResult {
       venue: this.venue,
       address: this.address,
       contact_number: this.contact_number,
+      timezone: this.timezone,
       confidence: this.confidence_score,
     });
   }

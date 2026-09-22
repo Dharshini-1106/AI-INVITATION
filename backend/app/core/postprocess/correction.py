@@ -34,6 +34,7 @@ KNOWN_PLACES = {
     "kanyakumari": "Kanyakumari",
     "bengaluru": "Bengaluru",
     "bangalore": "Bengaluru",
+    "banglore": "Banglore",
     "hyderabad": "Hyderabad",
     "mumbai": "Mumbai",
     "delhi": "Delhi",
@@ -102,6 +103,34 @@ _COMMON_OCR_TYPOS = {
     "vonue": "Venue",
     "royat": "Royal",
     "hydorabad": "Hyderabad",
+}
+
+# Common OCR misspellings of person names (generic character-level confusions,
+# not specific names). These handle frequent OCR glyph errors in names.
+_COMMON_NAME_OCR_TYPOS = {
+    "abmed": "Ahmed",
+    "ahamed": "Ahmed",
+    "ahmeed": "Ahmed",
+    "mohamed": "Mohamed",
+    "mohammed": "Mohammed",
+    "muhamed": "Mohamed",
+    "muhammed": "Mohammed",
+    "rashed": "Rashed",
+    "rashid": "Rashid",
+    "khan": "Khan",
+    "ali": "Ali",
+    "hasan": "Hasan",
+    "hassan": "Hassan",
+    "hussain": "Hussain",
+    "husain": "Husain",
+    "fatima": "Fatima",
+    "fatma": "Fatma",
+    "aisha": "Aisha",
+    "aishah": "Aishah",
+    "maryam": "Maryam",
+    "mariam": "Mariam",
+    "zahra": "Zahra",
+    "zahara": "Zahara",
 }
 
 _sbert_model = None
@@ -200,6 +229,10 @@ def _normalize_word(word: str) -> str:
     fixed = _COMMON_OCR_TYPOS.get(word.lower().strip())
     if fixed:
         return fixed
+    # Check for common name OCR typos
+    fixed_name = _COMMON_NAME_OCR_TYPOS.get(word.lower().strip())
+    if fixed_name:
+        return fixed_name
     split = _split_merged_word(word)
     if len(split) > 1:
         return " ".join(split)

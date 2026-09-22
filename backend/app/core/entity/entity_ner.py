@@ -185,6 +185,32 @@ _ORG_KEYWORDS = ["invite", "cordially invite", "request the pleasure",
                  "family", "families", "association", "trust", "committee",
                  "foundation"]
 
+# Words that must never be tagged as PERSON even when they start with
+# uppercase (verbs, durations, day names, common nouns).
+_NOT_PERSON_WORDS = {
+    "organizes", "organize", "organizing", "organized",
+    "design", "designs", "designed", "learning", "learn",
+    "gain", "gaining", "gained", "transform", "transforms",
+    "transforming", "creating", "create", "creates", "created",
+    "interactive", "interactively", "fundamentals", "principles",
+    "components", "prototyping", "prototyping.", "wireframing",
+    "layouts", "skills", "experiences", "ideas", "session",
+    "full-day", "full day", "fullday",
+    "together", "better", "journey", "forever",
+    "celebrate", "celebrating", "welcome", "regards", "warmly",
+    "presence", "pleasure", "company", "auspicious", "occasion",
+    "blessings", "families", "relative", "kin", "members",
+    "guests", "everyone", "children", "couple",
+}
+
+# City / place names that should never be PERSON candidates.
+_NOT_PERSON_PLACES = {
+    "thoppupalayam", "perundurai", "erode", "coimbatore", "chennai",
+    "madurai", "bengaluru", "bangalore", "hyderabad", "mumbai",
+    "delhi", "kolkata", "pune", "salem", "vellore", "trichy",
+    "kochi", "kerala", "tirunelveli", "kanyakumari",
+}
+
 
 def _rule_based_ner(text: str, text_lines: List[str]) -> List[Entity]:
     """Generic rule-based entity extraction (fallback)."""
@@ -215,6 +241,21 @@ def _rule_based_ner(text: str, text_lines: List[str]) -> List[Entity]:
                     "celebration", "ceremony", "invitation", "announcement",
                     "party", "function", "housewarming", "muhurtham", "naming",
                     "join", "celebrate", "with", "the", "of", "and", "&"}
+    # Generic relationship/group words that are NOT person names.
+    _RELATIONSHIP_GROUP_WORDS = {"family", "families", "relatives", "relative",
+                                  "all the family", "all family", "all relatives",
+                                  "kin", "kinsfolk", "folk", "folks", "dear",
+                                  "friends", "guests", "everyone", "everybody",
+                                  "parents", "parent", "children", "child",
+                                  "couple", "members", "member"}
+    # ALL-CAPS or mixed-case lines containing these keywords are
+    # event headings or activity descriptions, never person names.
+    _EVENT_LINE_REJECT = {
+        "events", "performances", "recognitions", "achievements",
+        "activities", "competition", "exhibition", "display",
+        "exhibits", "agenda", "schedule", "menu", "programme",
+        "program", "sports", "annual", "cultural", "festival",
+    }
     for idx, line in enumerate(text_lines):
         ls = line.strip()
         if not ls or len(ls) > 40 or len(ls) < 3:
@@ -224,12 +265,78 @@ def _rule_based_ner(text: str, text_lines: List[str]) -> List[Entity]:
         lowered = ls.lower()
         if any(kw in lowered for kw in _LOCATION_KEYWORDS + _ORG_KEYWORDS):
             continue
+        if lowered in _RELATIONSHIP_GROUP_WORDS:
+            continue
         words = ls.split()
+        # Reject single words that are clearly not person names
+        # (verbs, durations, day names, common nouns, place names).
+        if len(words) == 1:
+            if words[0].lower() in _NOT_PERSON_WORDS:
+                continue
+            if words[0].lower() in _NOT_PERSON_PLACES:
+                continue
+            if words[0].lower() in {
+                "monday", "tuesday", "wednesday", "thursday",
+                "friday", "saturday", "sunday",
+            }:
+                continue
         if len(words) >= 2 and all(w.isupper() and len(w) > 1 for w in words):
+            continue
+        # Reject ALL-CAPS alpha words combined with event keywords
+        # (e.g. "ANNUAL DAY", "SPORTS DAY").
+        alpha_words = [w for w in words if w.isalpha()]
+        if len(alpha_words) >= 2 and all(w.isupper() for w in alpha_words):
+            if any(re.search(rf"\b{kw}\b", lowered) for kw in _EVENT_LINE_REJECT):
+                continue
+        # Reject mixed-case lines with connectors AND event/activity keywords.
+        if any(c in ls for c in "&|/"):
+            if any(kw in lowered.split() for kw in _EVENT_LINE_REJECT):
+                continue
+        # Reject Title Case lines (all words capitalized, none ALL-CAPS)
+        # containing activity/event keywords — activity descriptions,
+        # not person names.
+        alpha_words = [w for w in words if w.isalpha()]
+        if len(alpha_words) >= 2 and not all(w.isupper() for w in alpha_words):
+            if all(w[0].isupper() for w in words if w):
+                if any(kw in lowered.split() for kw in _EVENT_LINE_REJECT):
+                    continue
+        # Reject Title Case lines that contain common lowercase
+        # connector words (for, the, of, at, in, etc.) — these are
+        # descriptive phrases, not person names.
+        lowercase_connectors = {"for", "the", "of", "at", "in", "to", "and",
+                                "or", "on", "with", "from", "by", "our",
+                                "their", "our", "all"}
+        if any(w.lower() in lowercase_connectors for w in words):
+            continue
+        # Reject lines containing known cities, states, or venue
+        # keywords — locations and organizations, not persons.
+        _NER_CITIES = {
+            "madurai", "chennai", "coimbatore", "bengaluru", "bangalore",
+            "hyderabad", "mumbai", "delhi", "kolkata", "pune", "salem",
+            "vellore", "trichy", "erode", "kochi", "kerala", "goa",
+            "agra", "jaipur", "lucknow", "kanpur", "nagpur", "indore",
+            "surat", "ahmedabad", "thiruvananthapuram", "kanyakumari",
+            "mysuru", "vijayawada", "visakhapatnam", "noida",
+            "gurgaon", "thoothukudi", "tirunelveli", "greenville",
+            "kovilpatti", "tamil",
+        }
+        _NER_VENUE_WORDS = {
+            "college", "university", "school", "hall", "hotel", "resort",
+            "grounds", "stadium", "complex", "centre", "center",
+            "institute", "academy", "temple", "church", "mosque",
+        }
+        if any(w.lower().rstrip(".,;:") in _NER_CITIES for w in words):
+            continue
+        if any(kw in lowered for kw in _NER_VENUE_WORDS):
+            continue
+        # Reject multi-word lines where every word is a known place name
+        # (e.g. "Thoppupalayam Perundurai").
+        if len(words) >= 2 and all(
+            w.lower().rstrip(".,;:") in _NOT_PERSON_PLACES for w in words
+        ):
             continue
         if not ls[0].isupper():
             continue
-        # Skip if dominated by non-name words.
         filtered = [w for w in words if w.lower() not in _event_words]
         if len(filtered) < 1:
             continue

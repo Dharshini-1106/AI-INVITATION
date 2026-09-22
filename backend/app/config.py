@@ -37,6 +37,8 @@ class Settings(BaseSettings):
 
     # Google Calendar API key for calendar integration
     google_calendar_api_key: str = ""
+    google_maps_api_key: str = ""
+    travel_timezone: str = "Asia/Kolkata"
 
     # Google OAuth2 client credentials for user calendar access
     google_oauth_client_id: str = ""
@@ -45,7 +47,7 @@ class Settings(BaseSettings):
     frontend_redirect_url: str = ""
 
     class Config:
-        env_file = ".env"
+        env_file = BASE_DIR / ".env"
         extra = "ignore"
 
 

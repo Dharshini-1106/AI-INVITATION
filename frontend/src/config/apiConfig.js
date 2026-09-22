@@ -4,6 +4,7 @@ const API_CONFIG = {
   endpoints: {
     health: '/health',
     analyze: '/analyze',
+    travelPlan: '/travel/plan',
     pipelineStages: '/pipeline/stages',
   },
   timeout: 180000, // generous timeout for quick endpoints

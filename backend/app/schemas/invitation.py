@@ -37,7 +37,11 @@ class Event(BaseModel):
     venue: str = ""
     address: str = ""
     contact_number: str = ""
+    additional_information: str = ""
+    birthday_age: str = ""
+    printed_weekday: str = ""
     occasion_detail: str = ""
+    timezone: str = ""
     confidence: float = 0.0
 
     # Calendar-specific fields (optional, used by calendar endpoint)
@@ -72,6 +76,10 @@ class InvitationResult(BaseModel):
     venue: str = ""
     address: str = ""
     contact_number: str = ""
+    additional_information: str = ""
+    birthday_age: str = ""
+    printed_weekday: str = ""
+    timezone: str = ""
     language: str = ""
     confidence_score: float = 0.0
     number_of_events: int = 1

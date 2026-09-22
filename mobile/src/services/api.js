@@ -18,6 +18,7 @@ let client = axios.create({
  */
 async function discoverBackend() {
   const candidates = candidateBaseUrls();
+  const failures = [];
   for (const base of candidates) {
     try {
       const probe = axios.create({
@@ -39,10 +40,14 @@ async function discoverBackend() {
         return base;
       }
     } catch (e) {
-      // Try the next candidate
+      failures.push(`${base}: ${e?.message || 'unavailable'}`);
     }
   }
+  if (failures.length === candidates.length && failures.length) {
+    console.warn(`[api] Backend discovery failed: ${failures.join('; ')}`);
+  }
   return client.defaults.baseURL || null;
+
 }
 
 // Run discovery once at module load. Subsequent calls use the resolved client.
@@ -110,6 +115,13 @@ async function analyzeInvitation(imageAsset) {
   return new InvitationResult(res.data);
 }
 
+// Plan travel for an extracted event
+async function planTravel(payload) {
+  const c = await resolvedClient();
+  const res = await c.post(API_CONFIG.endpoints.travelPlan, payload);
+  return res.data;
+}
+
 // Create calendar events via backend Google Calendar integration
 async function createCalendarEvents(events, sessionId) {
   const c = await resolvedClient();
@@ -130,6 +142,7 @@ export {
   analyzeInvitation,
   rediscoverBackend,
   getResolvedBaseUrl,
+  planTravel,
   createCalendarEvents,
   getCalendarAuthUrl,
 };
@@ -140,6 +153,7 @@ export default {
   analyzeInvitation,
   rediscoverBackend,
   getResolvedBaseUrl,
+  planTravel,
   createCalendarEvents,
   getCalendarAuthUrl,
 };

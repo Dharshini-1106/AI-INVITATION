@@ -8,7 +8,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from .config import settings
-from .api.routes import analyze, calendar, health
+from .api.routes import analyze, calendar, health, travel
 
 logging.basicConfig(
     level=logging.INFO,
@@ -104,6 +104,7 @@ app.add_middleware(
 app.include_router(health.router, prefix="/api/v1", tags=["health"])
 app.include_router(analyze.router, prefix="/api/v1", tags=["invitation"])
 app.include_router(calendar.router, prefix="/api/v1", tags=["calendar"])
+app.include_router(travel.router, prefix="/api/v1", tags=["travel"])
 
 
 @app.get("/")

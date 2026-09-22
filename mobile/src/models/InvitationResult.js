@@ -11,6 +11,10 @@ export class InvitationEvent {
     venue = '',
     address = '',
     contact_number = '',
+    timezone = '',
+    additional_information = '',
+    birthday_age = '',
+    printed_weekday = '',
     confidence = 0,
   } = {}) {
     this.event_name = event_name;
@@ -23,6 +27,10 @@ export class InvitationEvent {
     this.venue = venue;
     this.address = address;
     this.contact_number = contact_number;
+    this.timezone = timezone;
+    this.additional_information = additional_information;
+    this.birthday_age = birthday_age;
+    this.printed_weekday = printed_weekday;
     this.confidence = confidence;
   }
 }
@@ -50,6 +58,7 @@ export class InvitationResult {
     venue = '',
     address = '',
     contact_number = '',
+    timezone = '',
     language = '',
     confidence_score = 0,
     number_of_events = 1,
@@ -70,6 +79,7 @@ export class InvitationResult {
     this.venue = venue;
     this.address = address;
     this.contact_number = contact_number;
+    this.timezone = timezone;
     this.language = language;
     this.confidence_score = confidence_score;
     this.number_of_events = number_of_events;
@@ -94,6 +104,7 @@ export class InvitationResult {
       venue: this.venue,
       address: this.address,
       contact_number: this.contact_number,
+      timezone: this.timezone,
       confidence: this.confidence_score,
     });
   }

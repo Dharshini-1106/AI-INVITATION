@@ -2,10 +2,11 @@ import React, { useMemo, useState } from 'react';
 import { SafeAreaView, ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
 import colors from '../theme/colors';
 import { createConfirmedCalendarEvents, validateCalendarEvents } from '../services/calendarService';
+import TravelPlanModal from '../components/TravelPlanModal';
 
 const EVENT_FIELDS = [
   ['event_name', 'Event Name'], ['event_type', 'Event Type'], ['date', 'Date'],
-  ['time', 'Time'], ['end_time', 'End Time'], ['venue', 'Venue'],
+  ['printed_weekday', 'Day'], ['time', 'Time'], ['end_time', 'End Time'], ['venue', 'Venue'],
   ['address', 'Address'], ['contact_number', 'Contact'],
 ];
 const COUPLE_FIELDS = [['bride_name', 'Bride'], ['groom_name', 'Groom']];
@@ -19,7 +20,23 @@ function isCoupleEvent(eventType) {
 
 export default function ResultScreen({ navigation, route }) {
   const { result } = route.params || {};
-  const initialEvents = useMemo(() => result?.events?.length ? result.events : [result?.primaryEvent || {}], [result]);
+  const initialEvents = useMemo(
+    () => result?.events?.length ? result.events : [result || {}],
+    [
+      result?.events,
+      result?.event_name,
+      result?.event_type,
+      result?.bride_name,
+      result?.groom_name,
+      result?.date,
+      result?.time,
+      result?.end_time,
+      result?.venue,
+      result?.address,
+      result?.contact_number,
+      result?.timezone,
+    ],
+  );
   const [events, setEvents] = useState(() => initialEvents.map((event) => ({ ...event })));
   const [editing, setEditing] = useState(false);
   const [scheduling, setScheduling] = useState(false);
@@ -99,6 +116,7 @@ export default function ResultScreen({ navigation, route }) {
               )}
             </View>
           ))}
+          <TravelPlanModal event={event} />
         </View>
       );
     })}

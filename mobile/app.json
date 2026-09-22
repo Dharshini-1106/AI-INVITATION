@@ -20,7 +20,14 @@
       "infoPlist": {
         "NSCameraUsageDescription": "This app uses the camera to scan invitation cards.",
         "NSPhotoLibraryUsageDescription": "This app uses the photo library to upload invitation images.",
-        "NSCalendarsUsageDescription": "This app adds invitation events to your calendar after you confirm them."
+        "NSCalendarsUsageDescription": "This app adds invitation events to your calendar after you confirm them.",
+        "NSLocationWhenInUseUsageDescription": "This app uses your current location to plan travel to an invitation event.",
+        "LSApplicationQueriesSchemes": [
+          "comgooglemaps",
+          "googlemaps",
+          "comgooglemapsurl"
+        ]
+
       }
     },
     "android": {
@@ -34,8 +41,11 @@
         "READ_CALENDAR",
         "WRITE_CALENDAR",
         "READ_MEDIA_IMAGES",
-        "READ_EXTERNAL_STORAGE",
-        "WRITE_EXTERNAL_STORAGE"
+        "ACCESS_FINE_LOCATION",
+        "ACCESS_COARSE_LOCATION",
+        "POST_NOTIFICATIONS"
+
+
       ]
     },
     "web": {
@@ -61,7 +71,21 @@
         {
           "calendarPermission": "This app adds invitation events to your calendar after you confirm them."
         }
+      ],
+      [
+        "expo-location",
+        {
+          "locationWhenInUsePermission": "This app uses your current location to plan travel to an invitation event."
+        }
+      ],
+      [
+        "expo-notifications",
+        {
+          "icon": "./assets/icon.png",
+          "color": "#0f172a"
+        }
       ]
+
     ]
   }
 }

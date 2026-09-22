@@ -17,3 +17,7 @@
       `rapidocr-onnxruntime==1.2.3` (Python 3.13-compatible), `pyclipper`, `shapely`
 - [x] 8. Restart backend; startup log now shows `RapidOCR initialized (multilingual ONNX)`
 - [x] 9. Verify real text extraction from `_rapid_test.png` → reads "WEDDING INVITATION / Mr Arjun & Ms Priya"
+- [x] 10. Fix false PERSON entity extraction (event words like Figma, Learn, Gain, ORGANIZES tagged as names)
+- [x] 11. Fix event name extraction for non-traditional event titles (workshop/training/design)
+- [x] 12. Fix venue extraction for college/university/institute venues
+- [x] 13. Fix day names, duration words, and city names being tagged as PERSON entities
