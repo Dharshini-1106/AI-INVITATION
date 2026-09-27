@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import List
 
 import cv2
+import numpy as np
 
 from ..config import settings
 from .quality.brisque import analyze_quality
@@ -108,6 +109,94 @@ def run_pipeline(image_bytes: bytes, filename: str, source: str = "gallery") -> 
         finally:
             Path(tmp_path).unlink(missing_ok=True)
 
+    def _ocr_name_band(img_arr):
+        """OCR the centered couple-name band at a larger scale.
+
+        Decorative script is often missed by the full-page detector because
+        the names are thin, widely spaced, and surrounded by ornaments. A
+        focused crop gives the recognizer more pixels without changing the
+        normal full-page OCR path.
+        """
+        height, width = img_arr.shape[:2]
+        # Keep the crop inside the centered names; side ornaments contain
+        # decorative words such as "Better" that can resemble short names.
+        x0, x1 = int(width * 0.18), int(width * 0.84)
+        y0, y1 = int(height * 0.13), int(height * 0.42)
+        if x1 <= x0 or y1 <= y0:
+            return []
+        crop = img_arr[y0:y1, x0:x1]
+        scale = 2.0
+        crop = cv2.resize(crop, None, fx=scale, fy=scale,
+                          interpolation=cv2.INTER_CUBIC)
+        with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp:
+            tmp_path = tmp.name
+        try:
+            cv2.imwrite(tmp_path, crop)
+            result = extract_text(
+                tmp_path,
+                use_ppocr=settings.use_ocr_ppocr,
+                lang="en",
+                use_rapidocr=settings.use_rapidocr,
+                use_tamil_ocr=False,
+            )
+            selected = getattr(result, "selected_lines", [])
+            lines = selected if len(selected) == len(result.lines) else [
+                (text, box, conf, "name_band")
+                for text, box, conf in result.lines
+            ]
+            translated = []
+            for text, box, conf, source_name in lines:
+                translated_box = (np.asarray(box, dtype=np.float32) / scale)
+                translated_box[:, 0] += x0
+                translated_box[:, 1] += y0
+                translated.append((text, translated_box, conf,
+                                   source_name + "_name_band"))
+            # Cursive names are often returned one word per detection. Group
+            # detections that share a visual row so the parser receives
+            # "Karthik Srinivasan" instead of two unrelated candidates.
+            rows = []
+            for item in sorted(translated,
+                               key=lambda value: float(np.mean(value[1][:, 1]))):
+                center_y = float(np.mean(item[1][:, 1]))
+                item_height = float(np.max(item[1][:, 1]) - np.min(item[1][:, 1]))
+                row = next((candidate for candidate in rows
+                            if abs(center_y - candidate["center_y"])
+                            <= max(item_height, candidate["height"]) * 0.6), None)
+                if row is None:
+                    rows.append({"center_y": center_y, "height": item_height,
+                                 "items": [item]})
+                else:
+                    row["items"].append(item)
+                    row["center_y"] = sum(
+                        float(np.mean(value[1][:, 1])) for value in row["items"]
+                    ) / len(row["items"])
+                    row["height"] = max(row["height"], item_height)
+
+            grouped = []
+            for row in sorted(rows, key=lambda candidate: candidate["center_y"]):
+                row_items = sorted(row["items"],
+                                   key=lambda value: float(np.min(value[1][:, 0])))
+                if len(row_items) == 1:
+                    grouped.append(row_items[0])
+                    continue
+                text = " ".join(str(value[0]).strip() for value in row_items
+                                if str(value[0]).strip())
+                boxes = np.concatenate([value[1] for value in row_items], axis=0)
+                x_min, y_min = np.min(boxes, axis=0)
+                x_max, y_max = np.max(boxes, axis=0)
+                merged_box = np.array([[x_min, y_min], [x_max, y_min],
+                                       [x_max, y_max], [x_min, y_max]],
+                                      dtype=np.float32)
+                grouped.append((text, merged_box,
+                                max(float(value[2]) for value in row_items),
+                                row_items[0][3]))
+            return grouped
+        except Exception as exc:
+            logger.warning("[%s OCR] Name-band OCR failed (%s)", label, exc)
+            return []
+        finally:
+            Path(tmp_path).unlink(missing_ok=True)
+
     # Run OCR on the enhanced image. extract_text already performs lightweight
     # script detection and runs the correct PaddleOCR model (Tamil or English)
     # based on that detection, so only one OCR pass is needed per image.
@@ -128,6 +217,11 @@ def run_pipeline(image_bytes: bytes, filename: str, source: str = "gallery") -> 
             original_ocr = _ocr_one(img)
         except Exception as exc:
             logger.warning("[%s OCR] Original-image OCR pass failed (%s)", label, exc)
+
+    # Decorative couple names are commonly missed by full-page text detection.
+    # OCR a focused, enlarged band so the names remain recoverable even when
+    # the surrounding invitation text is detected successfully.
+    name_band_lines = _ocr_name_band(img)
 
     # Extract per-request OCR diagnostics from the primary OCR run.
 
@@ -180,6 +274,8 @@ def run_pipeline(image_bytes: bytes, filename: str, source: str = "gallery") -> 
     if original_ocr is not None:
         original_lines = _lines_with_source(original_ocr)
 
+    original_lines.extend(name_band_lines)
+
     # Combine both passes, preserving reading order from the enhanced pass
     # first and appending any extra lines from the original pass that were
     # not already present.
@@ -223,7 +319,8 @@ def run_pipeline(image_bytes: bytes, filename: str, source: str = "gallery") -> 
     english_character_count = sum(
         ("A" <= ch <= "Z") or ("a" <= ch <= "z") for ch in raw_text
     )
-    ocr_confidences = [float(conf) for _, _, conf, _ in unique_lines]
+    ocr_confidences = [float(conf) for _, _, conf, _ in unique_lines
+                       if float(conf) > 0]
     ocr_confidence = round(
         sum(ocr_confidences) / len(ocr_confidences), 4
     ) if ocr_confidences else None

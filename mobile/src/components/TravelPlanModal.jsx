@@ -76,7 +76,9 @@ function getErrorMessage(error) {
 }
 
 export default function TravelPlanModal({ event }) {
-  const initialDestination = event?.address || event?.venue || '';
+  const initialDestination = event?.venue && event?.address
+    ? `${event?.venue}, ${event?.address}`.replace(/\s*,\s*/g, ', ').replace(/,,+/g, ',')
+    : event?.address || event?.venue || '';
   const eventKey = JSON.stringify([
     event?.date,
     event?.time,
@@ -228,9 +230,13 @@ export default function TravelPlanModal({ event }) {
     setError('');
     setMapsUrl('');
     try {
+      const destAddress = event?.venue && event?.address
+        ? `${event?.venue}, ${event?.address}`.replace(/\s*,\s*/g, ', ').replace(/,,+/g, ',')
+        : event?.venue || event?.address || selectedDestination || '';
+      console.log('[travel] FINAL destination:', destAddress);
       const result = await planTravel({
         origin: selectedOrigin,
-        destination: { type: 'event', address: selectedDestination },
+        destination: { type: 'event', address: destAddress },
         event_date: event?.date || '',
         event_start_time: event?.time || '',
         event_timezone: event?.timezone || DEFAULT_TIMEZONE,

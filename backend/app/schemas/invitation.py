@@ -7,7 +7,7 @@ class Person(BaseModel):
     """A person participating in or associated with the invitation."""
 
     name: str = ""
-    role: str = ""
+    role: str = "Person"
 
 
 class ImageQuality(BaseModel):

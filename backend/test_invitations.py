@@ -231,7 +231,7 @@ def main():
          {"event_type": "Wedding", "bride_name": "Meera",
           "groom_name": "Arjun", "time": "9:00 AM",
           "date": "June 2, 2024", "venue": "Hindu Temple Hall",
-          "address": "3 North Car St, Madurai 625001", "contact_number": "9840012345"}),
+          "address": "3 North Car Street, Madurai 625001", "contact_number": "9840012345"}),
     ]
 
     passed = 0

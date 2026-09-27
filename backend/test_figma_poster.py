@@ -39,17 +39,38 @@ ORGANIZES
 FIGMA FOR UI/UX DESIGN:
 FROM BASICS TO PROTOTYPING
 KONGU ENGINEERING COLLEGE 9:00 AM to 4:00 PM
+Friday
+2026
 23 OCTOBER
 Perundurai Railway Station Road
-Friday
-Erode - 638 060 Tamil Nadu India"""
+Thoppupalayam,
+Perundurai, Erode - 638 060,
+Tamil Nadu, India"""
 
     passed = 0
     if check("Figma poster", raw, "Figma for UI/UX Design", "Workshop"):
         passed += 1
 
-    print(f"\n{passed}/{1} tests passed")
-    return 0 if passed == 1 else 1
+    print("\n[extra checks]")
+    p = parse_invitation({}, raw)
+    extra_ok = (
+        p.get("date") == "October 23, 2026"
+        and p.get("printed_weekday") == "Friday"
+        and p.get("address") == (
+            "Perundurai Railway Station Road, Thoppupalayam, "
+            "Perundurai, Erode - 638 060, Tamil Nadu, India"
+        )
+        and p.get("venue") == "KEC KONGU ENGINEERING COLLEGE"
+        and p.get("time") == "9:00 AM"
+        and p.get("end_time") == "4:00 PM"
+        and p.get("people", []) == []
+    )
+    print(f"  [{'OK' if extra_ok else 'FAIL'}] date/address/venue/time/weekday")
+    if extra_ok:
+        passed += 1
+
+    print(f"\n{passed}/{2} tests passed")
+    return 0 if passed == 2 else 1
 
 
 if __name__ == "__main__":

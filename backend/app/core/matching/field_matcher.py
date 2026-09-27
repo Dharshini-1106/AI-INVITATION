@@ -126,6 +126,93 @@ def _sbert_match_option_with_fields(entities: List[object]) -> Dict[str, str]:
         return {}
 
 
+# Simple heuristics to filter out PERSON entities that are clearly
+# not person names (event headings, common nouns, ALL-CAPS words).
+_NOT_LIKE_NAME = {
+    "excellence", "american", "indian", "tamil", "madurai",
+    "chennai", "coimbatore", "bengaluru", "bangalore",
+    "hyderabad", "mumbai", "delhi", "kolkata", "pune",
+    "recognitions", "performances", "achievements",
+    "knowledge", "flourish", "plaza", "com", "and",
+    "stronger", "students", "tomorrow", "healthier",
+    "different", "people", "today", "leaders",
+    "discipline", "growth", "opportunity", "community",
+    "common", "purpose", "people", "person",
+    "art", "faster", "culture", "creativity", "higher",
+    "beyond", "limits", "together", "play", "excel",
+    "rise", "reflect", "rejoice", "persevere", "celebrate",
+    "track", "recognition", "recognitions", "daily", "since",
+    "her", "our", "your", "their",
+}
+
+
+# Tamil wedding / religious / invitation phrases (and key fragments) that OCR
+# may surface as standalone tokens but are never person names. Kept in sync
+# with the parser's `_TAMIL_NON_NAME_MARKERS` list.
+_TAMIL_NON_NAME_MARKERS = (
+    "அழைப்பிதழ்", "திருமண", "ருமண", "வரவேற்பு", "நன்றி", "வாழ்த்து", "அன்புடன்",
+    "வாழ்த்துகள்", "நிகாஹ்", "நிகாஹ", "குடும்பம்", "திருநாள்",
+    "மகிழ்ச்சி", "கல்யாணம்", "வலீமா", "வலிமா", "அலீமா",
+    "நகாஹ", "மணம", "நிகா", "லீமா",
+    "கணபதி", "சுப்ரமணி", "நமஸ்தே", "ஓம்", "நமஃசரணம்",
+)
+
+
+def _has_tamil_chars(value: str) -> bool:
+    return any(0x0B80 <= ord(ch) <= 0x0BFF for ch in value)
+
+
+def _contains_tamil_non_name_marker(value: str) -> bool:
+    return any(marker in value for marker in _TAMIL_NON_NAME_MARKERS)
+
+
+def _looks_like_person_name(value: str) -> bool:
+    if not value or len(value.strip()) < 3:
+        return False
+    stripped = value.strip().strip(".,;:'\"")
+    if stripped.lower() in _NOT_LIKE_NAME:
+        return False
+    # Reject Tamil lines that contain wedding / religious / invitation
+    # phrases — these are OCR fragments (e.g. "ருமண", "கணபதியெ நம:"), not
+    # person names. We must not translate Tamil OCR blindly.
+    if _has_tamil_chars(stripped) and _contains_tamil_non_name_marker(stripped):
+        return False
+    words = stripped.split()
+    if len(words) == 1 and stripped.isupper() and len(stripped) >= 3:
+        return False
+    if len(words) == 1 and stripped.lower() in {
+        "monday", "tuesday", "wednesday", "thursday",
+        "friday", "saturday", "sunday",
+        "venue", "event", "programme", "program", "festival",
+        "sports", "annual", "cultural", "arts", "culture",
+        "recognition", "performance", "competition", "exhibition",
+    }:
+        return False
+    # Reject multi-word ALL-CAPS phrases (e.g. "ALL TOP", "REAL WORLD").
+    if len(words) >= 2 and all(w.isupper() for w in words):
+        return False
+    # Reject names where any word is a common non-name word.
+    if any(w.lower() in _NOT_LIKE_NAME for w in words):
+        return False
+    # Reject names where most words are very short (1-2 chars),
+    # e.g. OCR artifacts like "C H A R A C T E R".
+    if len(words) >= 2:
+        short = sum(1 for w in words if len(w) <= 2)
+        if short >= len(words) * 0.7:
+            return False
+    return True
+
+
+def _gender_hint_from_name(name: str) -> str:
+    """Return 'female', 'male', or '' based on honorifics in name."""
+    name_lower = name.lower()
+    if any(h in name_lower for h in ("ms.", "mrs.", "miss", "smt.", "selvi")):
+        return "female"
+    if any(h in name_lower for h in ("mr.", "dr.", "sri", "thiru", "er.", "kum.")):
+        return "male"
+    return ""
+
+
 def _rule_match(entities: List[object]) -> Dict[str, str]:
     """Type-based fallback mapping (never depends on a model)."""
     result: Dict[str, str] = {}
@@ -140,7 +227,8 @@ def _rule_match(entities: List[object]) -> Dict[str, str]:
         elif etype == "TIME":
             result.setdefault("time", val)
         elif etype == "PERSON":
-            persons.append(val)
+            if _looks_like_person_name(val):
+                persons.append((val, _gender_hint_from_name(val)))
         elif etype == "LOCATION":
             # Prefer venue over address unless a street keyword is present.
             if re.search(r"\b(street|road|rd|nagar|colony|pin|avenue|ave)\b",
@@ -155,13 +243,26 @@ def _rule_match(entities: List[object]) -> Dict[str, str]:
             else:
                 result.setdefault("event_name", val)
 
-    # Assign two persons to bride/groom (order heuristic only when no gender
-    # info; left as-is, parser will refine).
-    if persons:
-        if "bride_name" not in result:
-            result["bride_name"] = persons[0]
-        if len(persons) > 1 and "groom_name" not in result:
-            result["groom_name"] = persons[1]
+    # Assign persons to bride/groom using gender hints.
+    # Only assign if we have clear gender signals or multiple distinct persons.
+    female_names = [p[0] for p in persons if p[1] == "female"]
+    male_names = [p[0] for p in persons if p[1] == "male"]
+    neutral_names = [p[0] for p in persons if p[1] == ""]
+
+    if female_names:
+        result["bride_name"] = female_names[0]
+    elif neutral_names:
+        result["bride_name"] = neutral_names[0]
+
+    # Only assign groom_name if we have a male name or multiple neutral names
+    if male_names:
+        result["groom_name"] = male_names[0]
+    elif len(neutral_names) > 1:
+        result["groom_name"] = neutral_names[1]
+    elif len(persons) > 1 and not female_names and not male_names:
+        # Fallback: if multiple persons but no gender hints, use second
+        result["groom_name"] = persons[1][0]
+
     return result
 
 

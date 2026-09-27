@@ -26,7 +26,7 @@ class Settings(BaseSettings):
     use_ocr_ppocr: bool = True
     use_rapidocr: bool = True
     use_tamil_ocr: bool = True
-    use_dual_ocr: bool = False
+    use_dual_ocr: bool = True
     use_sbert: bool = False
     use_ner: bool = False
     use_matching: bool = False

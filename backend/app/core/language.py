@@ -59,6 +59,23 @@ def detect_language(text: str, ocr_lang: str = "") -> str:
 
     # Determine dominant script
     dominant = max(percentages, key=percentages.get)
+
+    # Mixed-language detection: if more than one script carries a meaningful
+    # share (>= 2%), report a mixed language rather than attributing the text
+    # solely to the dominant (usually English) script.
+    active_scripts = [name for name, pct in percentages.items() if pct >= 0.02]
+    indic_active = any(
+        name in ("Tamil", "Hindi", "Malayalam", "Telugu", "Kannada")
+        for name in active_scripts
+    )
+    if len(active_scripts) >= 2 and indic_active:
+        # Report the Indian language first for readability.
+        indic_scripts = [
+            n for n in ("Tamil", "Hindi", "Malayalam", "Telugu", "Kannada")
+            if percentages.get(n, 0) >= 0.02
+        ]
+        return " + ".join(indic_scripts + ["English"])
+
     if percentages[dominant] < 0.35:
         # Mixed language
         return "Mixed Language"

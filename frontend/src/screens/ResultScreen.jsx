@@ -169,18 +169,16 @@ function ResultScreen() {
       </div>
 
       {/* People / Participants section */}
-      {people.length > 0 && (
-        <div style={styles.section}>
-          <h2 style={styles.sectionTitle}>
-            {isMulti ? 'People / Participants' : 'People / Participants'}
-          </h2>
+      <div style={styles.section}>
+        <h2 style={styles.sectionTitle}>People / Participants</h2>
+        {people.length > 0 ? (
           <div style={styles.peopleList}>
             {people.map((p, idx) => (
               <PersonCard key={idx} person={p} />
             ))}
           </div>
-        </div>
-      )}
+        ) : <span style={styles.personRole}>No people identified</span>}
+      </div>
 
       {/* Tabs */}
       <div style={styles.tabs}>

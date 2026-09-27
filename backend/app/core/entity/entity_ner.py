@@ -201,6 +201,13 @@ _NOT_PERSON_WORDS = {
     "presence", "pleasure", "company", "auspicious", "occasion",
     "blessings", "families", "relative", "kin", "members",
     "guests", "everyone", "children", "couple",
+    # Generic filler words commonly seen in invitation designs
+    "two", "one", "better", "forever", "journey", "beautiful",
+    "with", "and", "the", "of", "for", "in", "on", "at", "to",
+    "our", "your", "their", "all", "save", "save the date",
+    "date", "time", "venue", "address", "contact", "rsvp",
+    "m.b.b.s", "b.e", "b.tech", "m.tech", "ph.d", "m.d",
+    "one beautiful", "eight", "8", "e", "0", "9",
 }
 
 # City / place names that should never be PERSON candidates.
@@ -210,6 +217,48 @@ _NOT_PERSON_PLACES = {
     "delhi", "kolkata", "pune", "salem", "vellore", "trichy",
     "kochi", "kerala", "tirunelveli", "kanyakumari",
 }
+
+# Common English words frequently seen in invitation phrases
+# (not in proper person names). If every word in a candidate is in
+# this set, the candidate is a descriptive phrase, not a name.
+_COMMON_PHRASE_WORDS = {
+    "beautiful", "beginning", "together", "blessings", "celebration",
+    "special", "presence", "pleasure", "warmth", "regards",
+    "joyfully", "invite", "make", "our", "your", "will", "more",
+    "occasion", "auspicious", "family", "families", "relative",
+    "kin", "members", "guests", "everyone", "children", "couple",
+    "close", "dear", "friends", "proud", "happy", "glad", "thank",
+    "grateful", "blessed", "blessing", "celebrate", "welcoming",
+    "warm", "sincere", "heartfelt", "respectful", "humble",
+    "request", "pleased", "honour", "honor", "privilege",
+    "privileged", "gathering", "solemnize", "solemnization",
+    "marriage", "wedding", "ceremony", "reception",
+    # Additional common invitation design words
+    "little", "girl", "boy", "star", "princess", "big", "tiny",
+    "feet", "happiness", "dreams", "brighter", "tomorrow",
+    "repeat", "eat", "play", "see", "there", "filled", "love",
+    "fun", "day", "older", "turning", "year", "one", "special",
+    "plaza", "resort", "hotel", "hall", "venue", "address",
+}
+# Short function words (articles, prepositions, conjunctions, pronouns)
+# that are never proper names but appear in name-like phrases.
+_FUNCTION_WORDS = {
+    "a", "an", "the", "of", "in", "at", "to", "for", "with",
+    "on", "by", "from", "or", "and", "our", "their", "its",
+    "this", "that", "these", "those",
+}
+
+
+def _is_common_phrase(words: List[str]) -> bool:
+    """Return True if every word is a common English word (not a proper name)."""
+    if not words:
+        return False
+    for w in words:
+        lw = w.lower()
+        if lw in _COMMON_PHRASE_WORDS or lw in _FUNCTION_WORDS:
+            continue
+        return False
+    return True
 
 
 def _rule_based_ner(text: str, text_lines: List[str]) -> List[Entity]:
@@ -262,6 +311,9 @@ def _rule_based_ner(text: str, text_lines: List[str]) -> List[Entity]:
             continue
         if re.search(r"[0-9]", ls):
             continue
+        # Reject abbreviation-like patterns (M.B.B.S., B.E., Ph.D., etc.)
+        if re.search(r"\b[A-Z]\.[A-Z]\.", ls):
+            continue
         lowered = ls.lower()
         if any(kw in lowered for kw in _LOCATION_KEYWORDS + _ORG_KEYWORDS):
             continue
@@ -279,6 +331,9 @@ def _rule_based_ner(text: str, text_lines: List[str]) -> List[Entity]:
                 "monday", "tuesday", "wednesday", "thursday",
                 "friday", "saturday", "sunday",
             }:
+                continue
+            # Reject ALL-CAPS single words (e.g. "PLAY", "EAT", "CELEBRATE")
+            if words[0].isupper() and len(words[0]) > 1:
                 continue
         if len(words) >= 2 and all(w.isupper() and len(w) > 1 for w in words):
             continue
@@ -324,6 +379,8 @@ def _rule_based_ner(text: str, text_lines: List[str]) -> List[Entity]:
             "college", "university", "school", "hall", "hotel", "resort",
             "grounds", "stadium", "complex", "centre", "center",
             "institute", "academy", "temple", "church", "mosque",
+            "maaligai", "mandapam", "marriage hall", "function hall",
+            "plaza", "palace", "banquet", "convention", "auditorium",
         }
         if any(w.lower().rstrip(".,;:") in _NER_CITIES for w in words):
             continue
@@ -335,13 +392,25 @@ def _rule_based_ner(text: str, text_lines: List[str]) -> List[Entity]:
             w.lower().rstrip(".,;:") in _NOT_PERSON_PLACES for w in words
         ):
             continue
+        # Reject Tamil lines that contain wedding / religious / invitation
+        # phrases (OCR fragments like "ருமண", "கணபதியே நம:") — these are
+        # not person names and must not be promoted to PERSON entities.
+        if any(0x0B80 <= ord(ch) <= 0x0BFF for ch in ls):
+            if any(marker in ls for marker in (
+                    "அழைப்பிதழ்", "திருமண", "ருமண", "வரவேற்பு", "நன்றி",
+                    "வாழ்த்து", "அன்புடன்", "வாழ்த்துகள்", "நிகாஹ்",
+                    "நிகாஹ", "குடும்பம்", "திருநாள்", "மகிழ்ச்சி",
+                    "கல்யாணம்", "வலீமா", "வலிமா", "அலீமா", "நகாஹ",
+                    "மணம", "நிகா", "லீமா", "கணபதி", "சுப்ரமணி",
+                    "நமஸ்தே", "ஓம்", "நமஃசரணம்")):
+                continue
         if not ls[0].isupper():
             continue
         filtered = [w for w in words if w.lower() not in _event_words]
         if len(filtered) < 1:
             continue
         cleaned = " ".join(filtered).strip(" .,;:")
-        if len(cleaned) >= 3:
+        if len(cleaned) >= 3 and not _is_common_phrase(filtered):
             entities.append(Entity("PERSON", cleaned, cleaned, 0.6,
                                    "rule_person", line_index=idx))
 

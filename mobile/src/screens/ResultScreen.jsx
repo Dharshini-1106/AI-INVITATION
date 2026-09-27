@@ -9,17 +9,19 @@ const EVENT_FIELDS = [
   ['printed_weekday', 'Day'], ['time', 'Time'], ['end_time', 'End Time'], ['venue', 'Venue'],
   ['address', 'Address'], ['contact_number', 'Contact'],
 ];
-const COUPLE_FIELDS = [['bride_name', 'Bride'], ['groom_name', 'Groom']];
 const display = (value) => value === undefined || value === null || value === '' ? 'Not available' : String(value);
-
-function isCoupleEvent(eventType) {
-  if (!eventType) return false;
-  const t = eventType.toLowerCase().trim();
-  return ['wedding', 'marriage', 'engagement', 'nikah', 'walima', 'mehndi', 'haldi', 'muhurtham'].includes(t);
-}
 
 export default function ResultScreen({ navigation, route }) {
   const { result } = route.params || {};
+  const rawText = result?.raw_text || '';
+  const derivedTamilCount = [...rawText].filter((character) => {
+    const codePoint = character.codePointAt(0);
+    return codePoint >= 0x0B80 && codePoint <= 0x0BFF;
+  }).length;
+  const derivedEnglishCount = [...rawText].filter((character) => (
+    (character >= 'A' && character <= 'Z')
+    || (character >= 'a' && character <= 'z')
+  )).length;
   const initialEvents = useMemo(
     () => result?.events?.length ? result.events : [result || {}],
     [
@@ -75,32 +77,25 @@ export default function ResultScreen({ navigation, route }) {
     if (result.bride_name) people.push({ name: result.bride_name, role: 'Bride' });
     if (result.groom_name) people.push({ name: result.groom_name, role: 'Groom' });
   }
-
   return <SafeAreaView style={styles.container}><ScrollView contentContainerStyle={styles.content}>
     <Text style={styles.title}>{scheduled ? 'Event Added Successfully' : 'We extracted this information.'}</Text>
     <Text style={styles.subtitle}>{scheduled ? 'Your confirmed event details were added to your calendar.' : 'Is everything correct?'}</Text>
 
-    {people.length > 0 && (
-      <View style={styles.card}>
-        <Text style={styles.eventTitle}>People / Participants</Text>
-        {people.map((p, idx) => (
+    <View style={styles.card}>
+      <Text style={styles.eventTitle}>People / Participants</Text>
+      {people.length === 0 ? <Text style={styles.muted}>No people identified</Text> : people.map((p, idx) => (
           <View key={idx} style={styles.row}>
             <Text style={styles.label}>{p.role || 'Person'}</Text>
             <Text style={styles.value}>{display(p.name)}</Text>
           </View>
         ))}
-      </View>
-    )}
+    </View>
 
     {events.map((event, eventIndex) => {
-      const showCouple = isCoupleEvent(event.event_type);
-      const fields = showCouple
-        ? [...EVENT_FIELDS, ...COUPLE_FIELDS]
-        : EVENT_FIELDS;
       return (
         <View key={`${event.event_name || 'event'}-${eventIndex}`} style={styles.card}>
           <Text style={styles.eventTitle}>Event {eventIndex + 1}{event.event_name ? ` - ${event.event_name}` : ''}</Text>
-          {fields.map(([field, label]) => (
+          {EVENT_FIELDS.map(([field, label]) => (
             <View key={field} style={styles.row}>
               <Text style={styles.label}>{label}</Text>
               {editing && !scheduled ? (
@@ -124,8 +119,8 @@ export default function ResultScreen({ navigation, route }) {
     <View style={styles.card}>
       <Text style={styles.eventTitle}>OCR details</Text>
       <Text style={styles.label}>Language</Text><Text style={styles.value}>{display(result.language)}</Text>
-      <Text style={styles.label}>Engine / confidence</Text><Text style={styles.value}>{display(result.ocr_engine)} / {Math.round((result.ocr_confidence || 0) * 100)}%</Text>
-      <Text style={styles.label}>Tamil / English characters</Text><Text style={styles.value}>{result.tamil_character_count || 0} / {result.english_character_count || 0}</Text>
+      <Text style={styles.label}>Engine / confidence</Text><Text style={styles.value}>{display(result.ocr_engine)} / {result.ocr_confidence == null ? 'Not available' : `${Math.round(result.ocr_confidence * 100)}%`}</Text>
+      <Text style={styles.label}>Tamil / English characters</Text><Text style={styles.value}>{result.tamil_character_count || derivedTamilCount} / {result.english_character_count || derivedEnglishCount}</Text>
       {!!result.raw_text && <><Text style={styles.label}>Raw extracted text</Text><Text selectable style={styles.rawText}>{result.raw_text}</Text></>}
       {(result.processing_notes || []).map((note, index) => <Text key={`${note}-${index}`} style={styles.note}>• {note}</Text>)}
     </View>
