@@ -40,11 +40,27 @@ export default function ResultScreen({ navigation, route }) {
     ],
   );
   const [events, setEvents] = useState(() => initialEvents.map((event) => ({ ...event })));
+  const [people, setPeople] = useState(() => {
+    const extracted = (result?.people || []).filter((person) => person && (person.name || person.role));
+    if (extracted.length) return extracted.map((person) => ({ ...person }));
+    return [
+      result?.bride_name && { name: result.bride_name, role: 'Bride' },
+      result?.groom_name && { name: result.groom_name, role: 'Groom' },
+    ].filter(Boolean);
+  });
   const [editing, setEditing] = useState(false);
   const [scheduling, setScheduling] = useState(false);
   const [message, setMessage] = useState('');
   const [scheduled, setScheduled] = useState(false);
   const update = (index, field, value) => setEvents((current) => current.map((event, i) => i === index ? { ...event, [field]: value } : event));
+  const updatePerson = (index, value) => {
+    const person = people[index];
+    setPeople((current) => current.map((entry, i) => i === index ? { ...entry, name: value } : entry));
+    const field = person?.role?.toLowerCase() === 'bride'
+      ? 'bride_name'
+      : person?.role?.toLowerCase() === 'groom' ? 'groom_name' : null;
+    if (field) setEvents((current) => current.map((event) => ({ ...event, [field]: value })));
+  };
 
   const schedule = async () => {
     const validation = validateCalendarEvents(events);
@@ -72,11 +88,6 @@ export default function ResultScreen({ navigation, route }) {
 
   if (!result) return <SafeAreaView style={styles.container}><View style={styles.empty}><Text style={styles.muted}>No result found.</Text><TouchableOpacity onPress={() => navigation.replace('Home')}><Text style={styles.homeText}>Go Home</Text></TouchableOpacity></View></SafeAreaView>;
 
-  const people = (result.people || []).filter((p) => p && (p.name || p.role));
-  if (!people.length) {
-    if (result.bride_name) people.push({ name: result.bride_name, role: 'Bride' });
-    if (result.groom_name) people.push({ name: result.groom_name, role: 'Groom' });
-  }
   return <SafeAreaView style={styles.container}><ScrollView contentContainerStyle={styles.content}>
     <Text style={styles.title}>{scheduled ? 'Event Added Successfully' : 'We extracted this information.'}</Text>
     <Text style={styles.subtitle}>{scheduled ? 'Your confirmed event details were added to your calendar.' : 'Is everything correct?'}</Text>
@@ -86,9 +97,25 @@ export default function ResultScreen({ navigation, route }) {
       {people.length === 0 ? <Text style={styles.muted}>No people identified</Text> : people.map((p, idx) => (
           <View key={idx} style={styles.row}>
             <Text style={styles.label}>{p.role || 'Person'}</Text>
-            <Text style={styles.value}>{display(p.name)}</Text>
+            {editing && !scheduled ? (
+              <TextInput
+                style={styles.input}
+                value={String(p.name ?? '')}
+                onChangeText={(value) => updatePerson(idx, value)}
+                placeholder="Enter name"
+                placeholderTextColor={colors.textMuted}
+                autoCapitalize="words"
+              />
+            ) : (
+              <Text style={styles.value}>{display(p.name)}</Text>
+            )}
           </View>
         ))}
+      {!editing && !scheduled && people.length > 0 && (
+        <TouchableOpacity onPress={() => setEditing(true)} accessibilityRole="button">
+          <Text style={styles.editNames}>Edit names</Text>
+        </TouchableOpacity>
+      )}
     </View>
 
     {events.map((event, eventIndex) => {
@@ -131,5 +158,5 @@ export default function ResultScreen({ navigation, route }) {
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: colors.background }, content: { padding: 20, paddingBottom: 40 }, empty: { flex: 1, justifyContent: 'center', alignItems: 'center' }, title: { color: colors.text, fontSize: 23, fontWeight: '700' }, subtitle: { color: colors.textMuted, marginTop: 8, lineHeight: 20 }, card: { backgroundColor: colors.card, borderColor: colors.border, borderWidth: 1, borderRadius: 14, padding: 14, marginBottom: 14 }, eventTitle: { color: colors.secondary, fontSize: 16, fontWeight: '700', marginBottom: 8 }, row: { borderTopColor: colors.border, borderTopWidth: 1, paddingVertical: 9 }, label: { color: colors.textMuted, fontSize: 12, marginTop: 8 }, value: { color: colors.text, fontSize: 15, fontWeight: '600', marginTop: 3 }, rawText: { color: colors.text, lineHeight: 20, marginTop: 4 }, note: { color: colors.textMuted, fontSize: 12, marginTop: 6 }, input: { color: colors.text, borderColor: colors.border, borderWidth: 1, borderRadius: 8, paddingHorizontal: 10, paddingVertical: 8, marginTop: 5 }, primary: { backgroundColor: colors.primary, borderRadius: 12, padding: 15, alignItems: 'center', marginTop: 8 }, primaryText: { color: '#fff', fontWeight: '700' }, secondary: { borderColor: colors.border, borderWidth: 1, borderRadius: 12, padding: 15, alignItems: 'center', marginTop: 10 }, home: { alignItems: 'center', padding: 15, marginTop: 10 }, secondaryText: { color: colors.primary, fontWeight: '700' }, error: { color: '#dc2626', lineHeight: 20, marginVertical: 8 }, success: { color: colors.success, lineHeight: 20, marginVertical: 8, fontWeight: '600' }, muted: { color: colors.textMuted }, homeText: { color: colors.primary, marginTop: 12, fontWeight: '700' },
+  container: { flex: 1, backgroundColor: colors.background }, content: { padding: 20, paddingBottom: 40 }, empty: { flex: 1, justifyContent: 'center', alignItems: 'center' }, title: { color: colors.text, fontSize: 23, fontWeight: '700' }, subtitle: { color: colors.textMuted, marginTop: 8, lineHeight: 20 }, card: { backgroundColor: colors.card, borderColor: colors.border, borderWidth: 1, borderRadius: 14, padding: 14, marginBottom: 14 }, eventTitle: { color: colors.secondary, fontSize: 16, fontWeight: '700', marginBottom: 8 }, row: { borderTopColor: colors.border, borderTopWidth: 1, paddingVertical: 9 }, label: { color: colors.textMuted, fontSize: 12, marginTop: 8 }, value: { color: colors.text, fontSize: 15, fontWeight: '600', marginTop: 3 }, editNames: { color: colors.primary, fontWeight: '700', textAlign: 'right', paddingVertical: 8 }, rawText: { color: colors.text, lineHeight: 20, marginTop: 4 }, note: { color: colors.textMuted, fontSize: 12, marginTop: 6 }, input: { color: colors.text, borderColor: colors.border, borderWidth: 1, borderRadius: 8, paddingHorizontal: 10, paddingVertical: 8, marginTop: 5 }, primary: { backgroundColor: colors.primary, borderRadius: 12, padding: 15, alignItems: 'center', marginTop: 8 }, primaryText: { color: '#fff', fontWeight: '700' }, secondary: { borderColor: colors.border, borderWidth: 1, borderRadius: 12, padding: 15, alignItems: 'center', marginTop: 10 }, home: { alignItems: 'center', padding: 15, marginTop: 10 }, secondaryText: { color: colors.primary, fontWeight: '700' }, error: { color: '#dc2626', lineHeight: 20, marginVertical: 8 }, success: { color: colors.success, lineHeight: 20, marginVertical: 8, fontWeight: '600' }, muted: { color: colors.textMuted }, homeText: { color: colors.primary, marginTop: 12, fontWeight: '700' },
 });

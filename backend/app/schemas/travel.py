@@ -18,6 +18,11 @@ class TravelPlanRequest(BaseModel):
     # coordinate/address objects so display text can never replace GPS data.
     origin: str | LocationInput = ""
     destination: str | LocationInput = ""
+    # Extracted venue name and full address, used to resolve the destination
+    # to a specific Google Place before routing. The original text is always
+    # preserved for display; only the routing waypoint is replaced.
+    destination_venue: str = ""
+    destination_address: str = ""
     event_date: str = ""
     event_start_time: str = ""
     event_timezone: str = ""
@@ -39,6 +44,8 @@ class TravelPlanResponse(BaseModel):
     ready_time: str = ""
     travel_mode: str
     destination: str
+    destination_place_id: str = ""
+    destination_place_name: str = ""
     origin: str
     timezone: str = ""
     google_maps_url: str

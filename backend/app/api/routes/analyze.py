@@ -1,21 +1,28 @@
 """Invitation upload & analysis endpoints."""
 import logging
+import threading
 import time
 from typing import List
 
-from fastapi import APIRouter, File, Header, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, Header, HTTPException, UploadFile
+from starlette.concurrency import run_in_threadpool
 
 from ...config import settings
 from ...core.pipeline import run_pipeline
 from ...schemas.invitation import InvitationResult
+from ...auth import require_user
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(tags=["invitation"])
+router = APIRouter(tags=["invitation"], dependencies=[Depends(require_user)])
+_analysis_lock = threading.Lock()
 
-# PaddleOCR can be slow on first run; allow generous timeout for analysis
-MAX_ANALYZE_SECONDS = 120
 
+def _run_pipeline_serialized(data: bytes, filename: str, source: str) -> dict:
+    # The OCR engine caches mutable model instances; avoid overlapping calls
+    # from separate upload requests while still freeing the ASGI event loop.
+    with _analysis_lock:
+        return run_pipeline(data, filename, source=source)
 
 @router.get("/pipeline/stages", response_model=List[str])
 def pipeline_stages():
@@ -60,7 +67,12 @@ async def analyze_invitation(
 
     try:
         start = time.time()
-        result = run_pipeline(data, filename, source=source)
+        # OCR and image enhancement are synchronous CPU/model work. Keep them
+        # off the ASGI event loop so health checks and other requests still
+        # work while an invitation is being processed.
+        result = await run_in_threadpool(
+            _run_pipeline_serialized, data, filename, source
+        )
         elapsed = time.time() - start
         logger.info("Analysis completed in %.2fs", elapsed)
         result["processing_notes"].append(f"Total processing time: {elapsed:.2f}s")

@@ -46,6 +46,10 @@ class Settings(BaseSettings):
     google_oauth_redirect_uri: str = ""
     frontend_redirect_url: str = ""
 
+    mongo_uri: str = ""
+    jwt_secret: str = ""
+    auth_cookie_secure: bool = False
+
     class Config:
         env_file = BASE_DIR / ".env"
         extra = "ignore"

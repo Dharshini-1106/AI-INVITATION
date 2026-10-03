@@ -58,7 +58,8 @@ function ProcessingScreen() {
       } catch (e) {
         if (cancelled) return;
         clearInterval(stageTimer);
-        if (e.code === 'ECONNABORTED') {
+        if (e.code === 'ECONNABORTED' || e.code === 'ETIMEDOUT' ||
+            (e.code === 'ERR_NETWORK' && /timeout/i.test(e.message || ''))) {
           setError('Analysis timed out. The invitation is taking longer than expected to process. Please try again with a clearer image or wait a bit longer.');
         } else if (!e.response) {
           setError('Cannot reach the backend. Please check that the backend is running on your PC and your phone/PC are on the same network.');

@@ -16,6 +16,14 @@ logger = logging.getLogger(__name__)
 GOOGLE_ROUTES_URL = "https://routes.googleapis.com/directions/v2:computeRoutes"
 GOOGLE_MAPS_DIRECTIONS_URL = "https://www.google.com/maps/dir/?api=1"
 _ROUTES_FIELD_MASK = "routes.duration,routes.distanceMeters"
+GOOGLE_PLACES_FIND_URL = "https://maps.googleapis.com/maps/api/place/findplacefromtext/json"
+_PLACE_FIND_FIELDS = "place_id,name,formatted_address,geometry,types"
+_PLACE_STOP_WORDS = {
+    "hall", "marriage", "ceremony", "wedding", "venue", "place", "center",
+    "centre", "road", "street", "nagar", "colony", "area", "layout", "town",
+    "city", "district", "state", "country", "india", "tamil", "nadu", "post",
+    "office", "building", "tower", "complex", "mandapam", "mandap",
+}
 _COORDINATE_RE = re.compile(
     r"^\s*(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)\s*$"
 )
@@ -51,7 +59,7 @@ class TravelPlanningError(Exception):
         self.google_maps_url = google_maps_url
 
 
-def _google_maps_url(origin: str, destination: str, travel_mode: str) -> str:
+def _google_maps_url(origin: str, destination: str, travel_mode: str, place_id: str = "") -> str:
     mode_map = {
         "DRIVE": "driving",
         "TWO_WHEELER": "bicycling",
@@ -59,9 +67,13 @@ def _google_maps_url(origin: str, destination: str, travel_mode: str) -> str:
     }
     params = {
         "origin": origin,
-        "destination": destination,
         "travelmode": mode_map.get(travel_mode, travel_mode.lower()),
     }
+    if place_id:
+        params["destination"] = destination
+        params["destination_place_id"] = place_id
+    else:
+        params["destination"] = destination
     return f"{GOOGLE_MAPS_DIRECTIONS_URL}&{urlencode(params)}"
 
 
@@ -77,6 +89,260 @@ def _waypoint(value: str) -> dict[str, Any]:
             }
         }
     return {"address": value.strip()}
+
+
+def _place_score(candidate: dict[str, Any], venue: str, address: str) -> float:
+    """Score a Google Places candidate against the extracted venue/address.
+
+    The score rewards candidates whose name and address overlap the
+    extracted context. It deliberately avoids awarding points for the
+    locality alone, so an unrelated place with a similar town name does
+    not win over the correct establishment.
+    """
+    score = 0.0
+    cand_name = (candidate.get("name") or "").lower()
+    cand_addr = (candidate.get("formatted_address") or "").lower()
+    cand_types = set(t.lower() for t in (candidate.get("types") or []))
+
+    venue_tokens = {
+        tok for tok in re.split(r"\W+", venue.lower()) if tok and tok not in _PLACE_STOP_WORDS
+    }
+    address_tokens = {
+        tok for tok in re.split(r"\W+", address.lower()) if tok and tok not in _PLACE_STOP_WORDS
+    }
+    address_tokens -= venue_tokens
+
+    if venue_tokens and venue_tokens.issubset(set(cand_name.split())):
+        score += 3.0
+    elif venue_tokens:
+        overlap = venue_tokens & set(cand_name.split())
+        score += 1.5 * len(overlap)
+
+    name_in_address = venue_tokens & set(cand_addr.split())
+    score += 0.8 * len(name_in_address)
+
+    addr_overlap = address_tokens & set(cand_addr.split())
+    score += 0.25 * len(addr_overlap)
+
+    if "establishment" in cand_types or "point_of_interest" in cand_types:
+        score += 0.5
+    if "restaurant" in cand_types or "lodging" in cand_types:
+        score -= 1.0
+
+    geom = candidate.get("geometry") or {}
+    loc = geom.get("location") or {}
+    if loc.get("lat") and loc.get("lng"):
+        score += 0.1
+    return score
+
+
+def _resolve_place_id(venue: str, address: str) -> dict[str, Any] | None:
+    """Resolve extracted venue/address to a single Google Place.
+
+    Returns a dict with place_id, name, formatted_address, latitude,
+    longitude when a reliable match is found, otherwise None. The caller
+    falls back to the raw address string when this returns None.
+    """
+    if not settings.google_maps_api_key:
+        return None
+
+    query = f"{venue} {address}".strip()
+    if not query:
+        return None
+
+    params = {
+        "input": query,
+        "fields": _PLACE_FIND_FIELDS,
+        "key": settings.google_maps_api_key,
+    }
+    try:
+        response = requests.get(
+            GOOGLE_PLACES_FIND_URL,
+            params=params,
+            timeout=15,
+        )
+    except requests.RequestException as exc:
+        logger.warning("Google Places resolution failed: %s", exc)
+        return None
+
+    if response.status_code != 200:
+        logger.warning(
+            "Google Places resolution returned HTTP %s", response.status_code
+        )
+        return None
+
+    try:
+        data = response.json()
+    except ValueError:
+        logger.warning("Google Places returned unreadable response")
+        return None
+
+    candidates = data.get("candidates") or []
+    if not candidates:
+        logger.info("Google Places returned no candidates for: %s", query)
+        return None
+
+    best = max(candidates, key=lambda c: _place_score(c, venue, address))
+    geom = best.get("geometry") or {}
+    loc = geom.get("location") or {}
+    lat = loc.get("lat")
+    lng = loc.get("lng")
+    if lat is None or lng is None:
+        logger.info("Google Places candidate missing geometry: %s", best.get("name"))
+        return None
+
+    score = _place_score(best, venue, address)
+    if score <= 0:
+        logger.info(
+            "Google Places candidate rejected (score %.2f): %s", score, best.get("name")
+        )
+        return None
+
+    logger.info(
+        "Resolved destination place: %s (%s) score=%.2f",
+        best.get("place_id"),
+        best.get("name"),
+        score,
+    )
+    return {
+        "place_id": best.get("place_id"),
+        "name": best.get("name"),
+        "formatted_address": best.get("formatted_address") or "",
+        "latitude": float(lat),
+        "longitude": float(lng),
+    }
+
+
+def _build_fallback_destination(venue: str, address: str) -> str:
+    """Build a geocode-safe destination string when Google Places is unavailable.
+
+    The full extracted address (venue + street + postal code) can geocode to a
+    different location than the actual venue when the street/pin combination is
+    ambiguous or OCR-mangled (e.g. ``Sivasami Maaligai Marriage Hall,
+    Alangulam Road, Mukkudal, Tirunelveli - 627 758`` resolves ~63 km away from
+    the real hall).
+
+    Routing to ``venue, city, state`` (dropping the street, the postal code,
+    and any landmark/locality fragments) resolves to the correct establishment
+    because the venue name + city + state is unambiguous. The original
+    extracted address is preserved for display; only the routing waypoint is
+    rebuilt.
+    """
+    venue = (venue or "").strip().rstrip(".,;:")
+    address = (address or "").strip().rstrip(".,;:")
+    if not venue:
+        return address
+
+    # A Tamil-only venue title is often not geocodable even when the locality
+    # has been normalized into an English map address. If Places could not
+    # resolve that venue, route to the resolved locality instead of retrying
+    # the same unsupported script as a combined free-text waypoint.
+    if (re.search(r"[\u0B80-\u0BFF]", venue)
+            and re.search(r"[A-Za-z]", address)):
+        return address
+
+    indian_states = {
+        "tamil nadu", "kerala", "karnataka", "andhra pradesh", "telangana",
+        "maharashtra", "gujarat", "rajasthan", "punjab", "haryana",
+        "uttar pradesh", "bihar", "west bengal", "odisha", "assam",
+        "madhya pradesh", "chhattisgarh", "jharkhand", "uttarakhand",
+        "himachal pradesh", "tripura", "meghalaya", "manipur", "nagaland",
+        "arunachal pradesh", "mizoram", "sikkim", "goa", "delhi",
+    }
+    country_words = {"india", "united states", "usa", "uk", "united kingdom"}
+
+    street_keywords = re.compile(
+        r"\b(?:road|rd\b|street|st\b|avenue|ave\b|lane|ln\b|drive|dr\b|"
+        r"court|ct\b|place|pl\b|boulevard|blvd|nagar|colony|layout|"
+        r"station|main\b|mg\b|estate|harbour|harbor|junction|crossing|"
+        r"by-pass|bypass|highway|national|sector|phase|puram|post\b|office|"
+        r"bus stop|busstand|ring road|gst road|bazaar|market|depot|terminal|"
+        r"harbour estate|salt pans)\b",
+        re.IGNORECASE,
+    )
+
+    segments = [s.strip().rstrip(".,;:") for s in address.split(",")]
+
+    # Pass 1: find the state/pin anchor and the country (if any).
+    state = ""
+    country = ""
+    pin_index = None
+    state_index = None
+    for i, seg in enumerate(segments):
+        low = seg.lower()
+        if not seg:
+            continue
+        if low in country_words:
+            country = seg
+            continue
+        if low in indian_states:
+            state = seg
+            state_index = i
+            continue
+        if re.search(r"\d{3}\s*\d{3}|\d{5,6}", seg):
+            pin_index = i
+            if not state:
+                m = re.match(
+                    r"^(.+?)(?:\s*[-–—]?\s*\d{3}\s*\d{3}|\s*\d{5,6})",
+                    seg,
+                )
+                if m:
+                    state = m.group(1).strip()
+
+    # Pass 2: the city is the nearest non-street segment before the pin/state
+    # anchor. When the pin is embedded in the same segment as the city
+    # (e.g. "Tirunelveli - 627 758"), extract the city portion from that
+    # segment. If no anchor exists, use the first non-street segment.
+    city = ""
+    anchor_index = pin_index if pin_index is not None else state_index
+    if anchor_index is not None:
+        if pin_index is not None:
+            pin_seg = segments[pin_index]
+            m = re.match(
+                r"^(.+?)(?:\s*[-–—]?\s*\d{3}\s*\d{3}|\s*\d{5,6})",
+                pin_seg,
+            )
+            if m:
+                prefix = m.group(1).strip()
+                # Only treat the pin segment's prefix as the city when it is
+                # NOT an Indian state name. When the pin segment is
+                # "Tamil Nadu 628501", the city is the preceding segment.
+                if prefix and prefix.lower() not in indian_states:
+                    if not street_keywords.search(prefix):
+                        city = prefix
+        if not city:
+            for j in range(anchor_index - 1, -1, -1):
+                candidate = segments[j]
+                if not candidate:
+                    continue
+                if street_keywords.search(candidate):
+                    continue
+                if candidate.lower() in country_words:
+                    continue
+                city = candidate
+                break
+    if not city:
+        for seg in segments:
+            if not seg:
+                continue
+            if street_keywords.search(seg):
+                continue
+            if seg.lower() in country_words:
+                continue
+            city = seg
+            break
+
+    parts = []
+    for piece in (city, state, country):
+        if piece and piece.lower() not in {p.lower() for p in parts}:
+            parts.append(piece)
+
+    if not parts:
+        return venue
+    context = ", ".join(parts)
+    if context.lower() in venue.lower():
+        return venue
+    return f"{venue}, {context}"
 
 
 def _location_value(value: str | LocationInput, field: str) -> str:
@@ -209,6 +475,28 @@ def _schedule_values(
         return "", "", "", "", event_datetime.tzinfo.key if event_datetime and event_datetime.tzinfo else "", False, "Event time unavailable — travel schedule cannot be calculated."
 
     timezone_name = event_datetime.tzinfo.key if event_datetime.tzinfo else ""
+    now = datetime.now(event_datetime.tzinfo)
+    if event_datetime <= now:
+        return (
+            _google_timestamp(event_datetime),
+            "",
+            "",
+            "",
+            timezone_name,
+            False,
+            "This event has already passed. Google Maps can show current route time, but a future event-day schedule is unavailable.",
+        )
+    if event_datetime - timedelta(minutes=arrival_buffer_minutes) <= now:
+        return (
+            _google_timestamp(event_datetime),
+            "",
+            "",
+            "",
+            timezone_name,
+            False,
+            "The requested arrival time has passed. The route shows current travel time; an event-day schedule is unavailable.",
+        )
+
     arrival_target = event_datetime - timedelta(minutes=arrival_buffer_minutes)
     departure = arrival_target - timedelta(seconds=travel_seconds)
     ready = departure - timedelta(minutes=preparation_minutes)
@@ -224,6 +512,12 @@ def _schedule_values(
 
 
 def _route_request(payload: dict[str, Any], maps_url: str) -> dict[str, Any]:
+    logger.info(
+        "Google Routes request: travel_mode=%s departure_time=%s arrival_time=%s",
+        payload.get("travelMode"),
+        payload.get("departureTime", ""),
+        payload.get("arrivalTime", ""),
+    )
     try:
         response = requests.post(
             GOOGLE_ROUTES_URL,
@@ -238,7 +532,7 @@ def _route_request(payload: dict[str, Any], maps_url: str) -> dict[str, Any]:
     except requests.RequestException as exc:
         logger.warning("Google Routes request failed: %s", exc)
         raise TravelPlanningError(
-            "Travel time is currently unavailable.",
+            "The backend could not reach Google Routes. Check the PC's internet connection and try again.",
             "route_unavailable",
             google_maps_url=maps_url,
         ) from exc
@@ -260,8 +554,12 @@ def _route_request(payload: dict[str, Any], maps_url: str) -> dict[str, Any]:
             "BAD_REQUEST",
             "NOT_FOUND",
         }:
+            safe_detail = detail.replace("\r", " ").replace("\n", " ").strip()[:240]
+            message = "Google Routes could not calculate this route. Check the origin and destination."
+            if safe_detail:
+                message = f"{message} Google reported: {safe_detail}"
             raise TravelPlanningError(
-                "Google Routes could not calculate this route. Check the origin and destination.",
+                message,
                 "route_invalid",
                 status_code=400,
                 google_maps_url=maps_url,
@@ -286,8 +584,9 @@ def _route_request(payload: dict[str, Any], maps_url: str) -> dict[str, Any]:
                 status_code=429,
                 google_maps_url=maps_url,
             )
+        safe_detail = detail.replace("\r", " ").replace("\n", " ").strip()[:240]
         raise TravelPlanningError(
-            "Travel time is currently unavailable.",
+            f"Google Routes returned HTTP {response.status_code}: {safe_detail or 'no error details provided'}",
             "route_unavailable",
             status_code=502,
             google_maps_url=maps_url,
@@ -297,18 +596,23 @@ def _route_request(payload: dict[str, Any], maps_url: str) -> dict[str, Any]:
         return response.json()
     except ValueError as exc:
         raise TravelPlanningError(
-            "Travel time is currently unavailable.",
+            "Google Routes returned an unreadable response. Check the backend terminal for details.",
             "route_unavailable",
             google_maps_url=maps_url,
         ) from exc
 
 
-def _route_metrics(data: dict[str, Any], maps_url: str) -> tuple[int | None, int | None]:
+def _route_metrics(
+    data: dict[str, Any],
+    maps_url: str,
+    travel_mode: str = "",
+) -> tuple[int | None, int | None]:
     routes = data.get("routes") or []
     if not routes:
         raise TravelPlanningError(
-            "Travel time is currently unavailable.",
-            "route_unavailable",
+            "Google Maps found no route. Check the destination address or try another travel mode.",
+            "route_not_found",
+            status_code=404,
             google_maps_url=maps_url,
         )
 
@@ -324,13 +628,51 @@ def _route_metrics(data: dict[str, Any], maps_url: str) -> tuple[int | None, int
         distance_meters = int(distance_meters) if distance_meters is not None else None
     except (TypeError, ValueError):
         distance_meters = None
+    logger.info(
+        "Google Routes result: travel_mode=%s duration_seconds=%s distance_meters=%s",
+        travel_mode,
+        travel_seconds,
+        distance_meters,
+    )
     return travel_seconds, distance_meters
 
 
 def plan_travel(request: TravelPlanRequest) -> dict[str, Any]:
+    logger.info("Travel plan API request: travel_mode=%s", request.travel_mode)
     origin = _location_value(request.origin, "origin")
-    destination = _location_value(request.destination, "destination")
-    maps_url = _google_maps_url(origin, destination, request.travel_mode)
+    raw_destination = _location_value(request.destination, "destination")
+
+    # Resolve the destination to a specific Google Place when the caller
+    # passed a free-text venue/address. This keeps the routing destination
+    # aligned with the place Google Maps itself resolves, while the
+    # original extracted text is preserved for display.
+    venue = (request.destination_venue or "").strip() if hasattr(request, "destination_venue") else ""
+    address = (request.destination_address or "").strip() if hasattr(request, "destination_address") else ""
+    if isinstance(request.destination, str):
+        address = address or raw_destination
+    place = _resolve_place_id(venue, address) if not _COORDINATE_RE.match(raw_destination) else None
+
+    routing_destination = raw_destination
+    place_id = ""
+    display_destination = raw_destination
+    if place:
+        routing_destination = f"{place['latitude']},{place['longitude']}"
+        place_id = place["place_id"] or ""
+        display_destination = place.get("formatted_address") or raw_destination
+    elif venue and not _COORDINATE_RE.match(raw_destination):
+        # Google Places is unavailable (or returned no reliable candidate).
+        # The full extracted address can geocode to a different location than
+        # the actual venue when the street/pin combination is ambiguous, so
+        # route to the venue name + locality instead. The original extracted
+        # address is preserved for display.
+        fallback = _build_fallback_destination(venue, address)
+        if fallback and fallback != raw_destination:
+            logger.info(
+                "Places unavailable; routing to fallback destination: %s", fallback
+            )
+            routing_destination = fallback
+
+    maps_url = _google_maps_url(origin, routing_destination, request.travel_mode, place_id)
     if not origin:
         raise TravelPlanningError(
             "Starting location is required.",
@@ -338,7 +680,7 @@ def plan_travel(request: TravelPlanRequest) -> dict[str, Any]:
             status_code=400,
             google_maps_url=maps_url,
         )
-    if not destination:
+    if not routing_destination:
         raise TravelPlanningError(
             "Destination is required.",
             "destination_required",
@@ -359,21 +701,24 @@ def plan_travel(request: TravelPlanRequest) -> dict[str, Any]:
         request.event_start_time,
         request.event_timezone,
     )
-    target_arrival = (
-        event_datetime - timedelta(minutes=request.arrival_buffer_minutes)
-        if event_datetime
-        else None
-    )
+    target_arrival = event_datetime - timedelta(minutes=request.arrival_buffer_minutes) if event_datetime else None
+    if target_arrival and target_arrival <= datetime.now(event_datetime.tzinfo):
+        target_arrival = None
     base_payload: dict[str, Any] = {
         "origin": _waypoint(origin),
-        "destination": _waypoint(destination),
+        "destination": _waypoint(routing_destination),
         "travelMode": request.travel_mode,
     }
 
+    # Keep the live route estimate separate from the event-time route used
+    # to calculate departure reminders. The duration shown in the app should
+    # match the current route estimate, like opening the route in Maps.
+    live_duration = None
     if request.travel_mode in {"DRIVE", "TWO_WHEELER"}:
         base_payload["routingPreference"] = "TRAFFIC_AWARE"
         route_data = _route_request(base_payload, maps_url)
-        initial_duration, _ = _route_metrics(route_data, maps_url)
+        initial_duration, _ = _route_metrics(route_data, maps_url, request.travel_mode)
+        live_duration = initial_duration
         if event_datetime and target_arrival and initial_duration is not None:
             recommended_departure = target_arrival - timedelta(seconds=initial_duration)
             refined_payload = dict(base_payload)
@@ -385,13 +730,16 @@ def plan_travel(request: TravelPlanRequest) -> dict[str, Any]:
     else:
         route_data = _route_request(base_payload, maps_url)
 
-    travel_seconds, distance_meters = _route_metrics(route_data, maps_url)
+    schedule_duration, distance_meters = _route_metrics(
+        route_data, maps_url, request.travel_mode
+    )
     event_iso, arrival, departure, ready, timezone_name, schedule_available, message = _schedule_values(
         event_datetime,
-        travel_seconds,
+        schedule_duration,
         request.preparation_minutes,
         request.arrival_buffer_minutes,
     )
+    travel_seconds = live_duration if live_duration is not None else schedule_duration
     duration_text = _format_duration(travel_seconds) if travel_seconds is not None else ""
     return {
         "distance_meters": distance_meters,
@@ -405,7 +753,9 @@ def plan_travel(request: TravelPlanRequest) -> dict[str, Any]:
         "departure_time": departure,
         "ready_time": ready,
         "travel_mode": request.travel_mode,
-        "destination": destination,
+        "destination": display_destination,
+        "destination_place_id": place_id,
+        "destination_place_name": place.get("name") if place else "",
         "origin": origin,
         "timezone": timezone_name,
         "google_maps_url": maps_url,

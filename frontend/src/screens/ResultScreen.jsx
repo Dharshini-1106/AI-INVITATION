@@ -37,7 +37,9 @@ function EventCard({ event, index }) {
     { key: 'end_time', label: 'End Time' },
     { key: 'venue', label: 'Venue' },
     { key: 'address', label: 'Address' },
+    { key: 'contact_address', label: 'Contact address' },
     { key: 'contact_number', label: 'Contact' },
+    { key: 'additional_information', label: 'Additional information' },
   ];
 
   return (
@@ -46,7 +48,7 @@ function EventCard({ event, index }) {
         {event.event_name ? `Event ${index + 1} - ${event.event_name}` : `Event ${index + 1}`}
       </h3>
       <div style={styles.fieldList}>
-        {fields.map((f) => (
+        {fields.filter((f) => event[f.key] || !['contact_address', 'additional_information'].includes(f.key)).map((f) => (
           <div key={f.key} style={styles.fieldRow}>
             <span style={styles.fieldLabel}>{f.label}</span>
             <span style={styles.fieldValue}>

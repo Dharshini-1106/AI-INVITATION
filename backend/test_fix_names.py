@@ -51,9 +51,9 @@ def main():
     bride_ok = "shoomika" in bride.lower()
     groom_ok = "prashanth" in groom.lower() or "rashant" in groom.lower()
     if bride_ok and groom_ok:
-        print("\n✓ PASS: Bride and groom correctly extracted!")
+        print("\nPASS: Bride and groom correctly extracted!")
     else:
-        print("\n✗ FAIL:")
+        print("\nFAIL:")
         if not bride_ok:
             print(f"  Expected bride containing 'shoomika', got {bride!r}")
         if not groom_ok:

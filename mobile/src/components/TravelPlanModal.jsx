@@ -12,7 +12,7 @@ import {
 } from 'react-native';
 import * as Location from 'expo-location';
 import colors from '../theme/colors';
-import { planTravel } from '../services/api';
+import { getResolvedBaseUrl, planTravel } from '../services/api';
 import { scheduleTravelNotifications } from '../services/travelNotificationService';
 
 const TRAVEL_MODES = [
@@ -22,6 +22,7 @@ const TRAVEL_MODES = [
 ];
 
 const PREPARATION_OPTIONS = ['30', '60', '90'];
+const ARRIVAL_BUFFER_OPTIONS = ['15', '30', '45'];
 const DEFAULT_TIMEZONE = 'Asia/Kolkata';
 const INVALID_ORIGIN_PLACEHOLDERS = new Set([
   'current location',
@@ -51,6 +52,15 @@ function getManualOrigin(value) {
   return origin && !INVALID_ORIGIN_PLACEHOLDERS.has(origin.toLowerCase()) ? origin : '';
 }
 
+function normalizeDestination(value) {
+  return String(value || '')
+    .replace(/\s+/g, ' ')
+    .replace(/\s*,\s*/g, ', ')
+    .replace(/(?:,\s*){2,}/g, ', ')
+    .replace(/^,\s*|,\s*$/g, '')
+    .trim();
+}
+
 function formatTime(value, timezone) {
   if (!value) return 'Not available';
   try {
@@ -68,17 +78,24 @@ function formatTime(value, timezone) {
   }
 }
 
+function displayTravelDuration(value) {
+  return value ? String(value).replace(/\bmin\b/g, 'mins') : 'Unavailable';
+}
+
 function getErrorMessage(error) {
   const detail = error?.response?.data?.detail;
   if (typeof detail === 'string') return detail;
+  if (detail?.message === 'Travel time is currently unavailable.') {
+    return 'An older backend is still responding on port 8000. Stop that backend with Ctrl+C, then start D:\\MINI\\backend\\run.py using the .venv-ml311 Python interpreter.';
+  }
   if (detail?.message) return detail.message;
   return error?.message || 'Travel time is currently unavailable.';
 }
 
 export default function TravelPlanModal({ event }) {
-  const initialDestination = event?.venue && event?.address
-    ? `${event?.venue}, ${event?.address}`.replace(/\s*,\s*/g, ', ').replace(/,,+/g, ',')
-    : event?.address || event?.venue || '';
+  const initialDestination = normalizeDestination(
+    [event?.venue, event?.address].filter(Boolean).join(', '),
+  );
   const eventKey = JSON.stringify([
     event?.date,
     event?.time,
@@ -95,7 +112,8 @@ export default function TravelPlanModal({ event }) {
   const [travelMode, setTravelMode] = useState('DRIVE');
   const [preparationMode, setPreparationMode] = useState('60');
   const [customPreparation, setCustomPreparation] = useState(60);
-  const [arrivalBuffer, setArrivalBuffer] = useState(15);
+  const [arrivalBufferMode, setArrivalBufferMode] = useState('15');
+  const [customArrivalBuffer, setCustomArrivalBuffer] = useState(15);
   const [plan, setPlan] = useState(null);
   const [error, setError] = useState('');
   const [mapsUrl, setMapsUrl] = useState('');
@@ -112,12 +130,13 @@ export default function TravelPlanModal({ event }) {
 
   useEffect(() => {
     if (open) {
-      setDestination(event?.address || event?.venue || '');
+      setDestination(initialDestination);
       setOriginMode('current');
       setTravelMode('DRIVE');
       setPreparationMode('60');
       setCustomPreparation(60);
-      setArrivalBuffer(15);
+      setArrivalBufferMode('15');
+      setCustomArrivalBuffer(15);
       setOrigin(null);
       setManualOrigin('');
       setPlan(null);
@@ -187,7 +206,7 @@ export default function TravelPlanModal({ event }) {
   };
 
   const submitPlan = async () => {
-    const selectedDestination = destination.trim();
+    const selectedDestination = normalizeDestination(destination);
     let selectedOrigin = '';
 
     if (originMode === 'current') {
@@ -215,7 +234,9 @@ export default function TravelPlanModal({ event }) {
     const preparationMinutes = preparationMode === 'custom'
       ? Number(customPreparation)
       : Number(preparationMode);
-    const bufferMinutes = Number(arrivalBuffer);
+    const bufferMinutes = arrivalBufferMode === 'custom'
+      ? Number(customArrivalBuffer)
+      : Number(arrivalBufferMode);
     if (!Number.isFinite(preparationMinutes) || preparationMinutes < 0 || preparationMinutes > 1440) {
       setError('Preparation time must be between 0 and 1440 minutes.');
       return;
@@ -226,13 +247,21 @@ export default function TravelPlanModal({ event }) {
     }
 
     console.log('[travel] travel request origin:', selectedOrigin);
+    console.log('[travel] API base URL:', getResolvedBaseUrl());
+    console.log('[travel] travel request settings:', {
+      destination: selectedDestination,
+      selectedUiMode: selectedMode?.label || travelMode,
+      apiTravelMode: travelMode,
+      preparationMinutes,
+      arrivalBufferMinutes: bufferMinutes,
+      eventDate: event?.date || '',
+      eventStartTime: event?.time || '',
+    });
     setLoading(true);
     setError('');
     setMapsUrl('');
     try {
-      const destAddress = event?.venue && event?.address
-        ? `${event?.venue}, ${event?.address}`.replace(/\s*,\s*/g, ', ').replace(/,,+/g, ',')
-        : event?.venue || event?.address || selectedDestination || '';
+      const destAddress = selectedDestination || initialDestination;
       console.log('[travel] FINAL destination:', destAddress);
       const result = await planTravel({
         origin: selectedOrigin,
@@ -246,11 +275,16 @@ export default function TravelPlanModal({ event }) {
       });
       setPlan(result);
       setMapsUrl(result?.google_maps_url || '');
-      scheduleTravelNotifications({ plan: result, event, destination: selectedDestination }).catch((notificationError) => {
+      scheduleTravelNotifications({ plan: result, event, destination: destAddress }).catch((notificationError) => {
         console.warn('[travel] reminder was not scheduled:', notificationError?.message || notificationError);
       });
     } catch (requestError) {
       const detail = requestError?.response?.data?.detail;
+      console.error('[travel] travel plan failed:', {
+        status: requestError?.response?.status,
+        detail,
+        message: requestError?.message,
+      });
       setMapsUrl(typeof detail === 'object' ? detail?.google_maps_url || '' : '');
       setError(getErrorMessage(requestError));
     } finally {
@@ -333,7 +367,7 @@ export default function TravelPlanModal({ event }) {
                   placeholderTextColor={colors.textMuted}
                 />
               )}
-              {originMode === 'current' && origin && <Text style={styles.hint}>Current location selected. Your precise location is not saved.</Text>}
+              {originMode === 'current' && origin && <Text style={styles.hint}>Starting location: Your current location is ready. It is used for this route calculation and is not saved in the app.</Text>}
 
               <Text style={styles.label}>How are you travelling?</Text>
               <View style={styles.modeGrid}>
@@ -382,41 +416,73 @@ export default function TravelPlanModal({ event }) {
               )}
 
               <Text style={styles.label}>How early do you want to reach?</Text>
-              <View style={styles.bufferRow}>
+              <View style={styles.optionRow}>
+                {ARRIVAL_BUFFER_OPTIONS.map((minutes) => (
+                  <TouchableOpacity
+                    key={minutes}
+                    style={[styles.optionButton, arrivalBufferMode === minutes && styles.optionButtonActive]}
+                    onPress={() => setArrivalBufferMode(minutes)}
+                    accessibilityRole="button"
+                    accessibilityState={{ selected: arrivalBufferMode === minutes }}
+                  >
+                    <Text style={[styles.optionButtonText, arrivalBufferMode === minutes && styles.optionButtonTextActive]}>
+                      {minutes} min
+                    </Text>
+                  </TouchableOpacity>
+                ))}
+                <TouchableOpacity
+                  style={[styles.optionButton, arrivalBufferMode === 'custom' && styles.optionButtonActive]}
+                  onPress={() => setArrivalBufferMode('custom')}
+                  accessibilityRole="button"
+                  accessibilityState={{ selected: arrivalBufferMode === 'custom' }}
+                >
+                  <Text style={[styles.optionButtonText, arrivalBufferMode === 'custom' && styles.optionButtonTextActive]}>Custom</Text>
+                </TouchableOpacity>
+              </View>
+              {arrivalBufferMode === 'custom' && (
                 <TextInput
-                  style={styles.bufferInput}
-                  value={String(arrivalBuffer)}
-                  onChangeText={(value) => setArrivalBuffer(value.replace(/[^0-9]/g, ''))}
+                  style={styles.input}
+                  value={String(customArrivalBuffer)}
+                  onChangeText={(value) => setCustomArrivalBuffer(value.replace(/[^0-9]/g, ''))}
                   keyboardType="number-pad"
-                  placeholder="15"
+                  placeholder="Arrival buffer minutes"
                   placeholderTextColor={colors.textMuted}
                 />
-                <Text style={styles.bufferUnit}>minutes</Text>
-              </View>
+              )}
 
               <TouchableOpacity style={styles.calculateButton} onPress={submitPlan} disabled={loading || locationLoading}>
                 {loading ? <ActivityIndicator color="#fff" /> : <Text style={styles.calculateButtonText}>Calculate Travel Plan</Text>}
               </TouchableOpacity>
 
               {!!error && <Text style={styles.error}>{error}</Text>}
+              {!!error && !!mapsUrl && (
+                <TouchableOpacity style={styles.mapsButton} onPress={openMaps}>
+                  <Text style={styles.mapsButtonText}>Open route in Google Maps</Text>
+                </TouchableOpacity>
+              )}
 
               {plan && (
                 <View style={styles.planCard}>
                   <Text style={styles.planTitle}>TRAVEL PLAN</Text>
                   <Text style={styles.planLine}><Text style={styles.planLabel}>Event: </Text>{event?.event_name || event?.event_type || 'Invitation event'}</Text>
-                  <Text style={styles.planLine}><Text style={styles.planLabel}>Date: </Text>{event?.date || 'Not available'}</Text>
-                  <Text style={styles.planLine}><Text style={styles.planLabel}>Time: </Text>{event?.time || 'Not available'}</Text>
+                  {!!event?.date && <Text style={styles.planLine}><Text style={styles.planLabel}>Date: </Text>{event.date}</Text>}
+                  {!!event?.venue && <Text style={styles.planLine}><Text style={styles.planLabel}>Venue: </Text>{event.venue}</Text>}
+                  {!!event?.address && <Text style={styles.planLine}><Text style={styles.planLabel}>Address: </Text>{event.address}</Text>}
+                  <Text style={styles.planLine}><Text style={styles.planLabel}>Total travel duration (Google Maps): </Text>{displayTravelDuration(plan.travel_duration_text)}</Text>
+                  {scheduleAvailable ? (
+                    <>
+                      <Text style={styles.planLine}><Text style={styles.planLabel}>Event starts: </Text>{formatTime(plan.event_start_time, timezone)}</Text>
+                      <Text style={styles.planLine}><Text style={styles.planLabel}>Recommended arrival: </Text>{formatTime(plan.arrival_time, timezone)}</Text>
+                      <Text style={styles.leaveTime}><Text>Leave home by: </Text>{formatTime(plan.departure_time, timezone)}</Text>
+                      <Text style={styles.planLine}><Text style={styles.planLabel}>Start getting ready by: </Text>{formatTime(plan.ready_time, timezone)}</Text>
+                    </>
+                  ) : plan.event_start_time ? (
+                    <Text style={styles.planLine}><Text style={styles.planLabel}>Event starts: </Text>{formatTime(plan.event_start_time, timezone)}</Text>
+                  ) : null}
                   <Text style={styles.planLine}><Text style={styles.planLabel}>Destination: </Text>{plan.destination || selectedDestinationText(destination, event)}</Text>
-                  <Text style={styles.planLine}><Text style={styles.planLabel}>Starting from: </Text>{originMode === 'current' ? 'Current location' : manualOrigin}</Text>
-                  <Text style={styles.planLine}><Text style={styles.planLabel}>Travel mode: </Text>{selectedMode.label}</Text>
-                  <Text style={styles.planLine}><Text style={styles.planLabel}>Google Maps travel time: </Text>{plan.travel_duration_text || 'Unavailable'}</Text>
                   <Text style={styles.planLine}><Text style={styles.planLabel}>Distance: </Text>{plan.distance_text || 'Unavailable'}</Text>
-                  <Text style={styles.planLine}><Text style={styles.planLabel}>Get ready by: </Text>{formatTime(plan.ready_time, timezone)}</Text>
-                  <Text style={styles.planLine}><Text style={styles.planLabel}>Leave by: </Text>{formatTime(plan.departure_time, timezone)}</Text>
-                  <Text style={styles.planLine}><Text style={styles.planLabel}>Reach by: </Text>{formatTime(plan.arrival_time, timezone)}</Text>
-                  <Text style={styles.planLine}><Text style={styles.planLabel}>Event starts: </Text>{formatTime(plan.event_start_time, timezone)}</Text>
                   {!!scheduleMessage && <Text style={styles.scheduleMessage}>{scheduleMessage}</Text>}
-                  {!scheduleAvailable && <Text style={styles.unavailable}>Event time unavailable — travel schedule cannot be calculated.</Text>}
+                  {!scheduleAvailable && !scheduleMessage && <Text style={styles.unavailable}>Event time unavailable — travel schedule cannot be calculated.</Text>}
                   {plan.google_maps_url && (
                     <TouchableOpacity style={styles.mapsButton} onPress={openMaps}>
                       <Text style={styles.mapsButtonText}>Open in Google Maps</Text>
@@ -468,6 +534,7 @@ const styles = StyleSheet.create({
   planCard: { backgroundColor: colors.card, borderColor: colors.border, borderWidth: 1, borderRadius: 14, padding: 15, marginTop: 18 },
   planTitle: { color: colors.secondary, fontSize: 16, fontWeight: '700', letterSpacing: 1, marginBottom: 10 },
   planLine: { color: colors.text, fontSize: 14, lineHeight: 22 },
+  leaveTime: { color: colors.text, fontSize: 16, fontWeight: '800', lineHeight: 26, marginTop: 4 },
   planLabel: { color: colors.textMuted },
   scheduleMessage: { color: colors.success, fontSize: 14, lineHeight: 21, marginTop: 12 },
   unavailable: { color: colors.warning, fontSize: 13, lineHeight: 19, marginTop: 10 },

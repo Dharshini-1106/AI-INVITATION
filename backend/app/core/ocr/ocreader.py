@@ -1210,10 +1210,19 @@ def extract_text(image_path: str, use_ppocr: bool = True, lang: str = "en",
     # existing Tamil PaddleOCR model and only kept if they improve the result.
     if use_tamil_ocr and raw_results and script_detected != "english":
         try:
-            for item in list(raw_results):
+            low_confidence_tamil_regions = [
+                item for item in raw_results
+                if float(item.get("confidence", 0.0)) < 0.6
+                and _has_tamil(str(item.get("text", "")))
+            ]
+            # A crop invokes a complete OCR model inference. Re-reading every
+            # low-confidence line on dense invitations made processing grow
+            # without a useful upper bound. Limit targeted retries to the first
+            # few Tamil regions and preserve the rest of the already usable OCR.
+            for item in low_confidence_tamil_regions[:3]:
                 text = str(item.get("text", "")).strip()
                 conf = float(item.get("confidence", 0.0))
-                if not text or conf >= 0.6:
+                if not text:
                     continue
                 try:
                     retry = _crop_and_ocr_tamil(image_path, np.array(item.get("bbox", [[0, 0], [0, 0], [0, 0], [0, 0]]), dtype=np.float32))

@@ -144,6 +144,8 @@ function TravelPlanModal({ event }) {
       const response = await planTravel({
         origin: origin.trim(),
         destination: destination.trim(),
+        destination_venue: event?.venue || '',
+        destination_address: event?.address || '',
         event_date: event?.date || '',
         event_start_time: event?.time || '',
         event_timezone: event?.timezone || '',
@@ -311,7 +313,7 @@ function TravelPlanModal({ event }) {
                 <div style={styles.planGrid}>
                   <span>Event</span><strong>{event?.event_name || event?.event_type || 'Extracted event'}</strong>
                   <span>Date</span><strong>{formatDateTime(plan.event_start_time, timezone)}</strong>
-                  <span>Destination</span><strong>{plan.destination}</strong>
+                  <span>Destination</span><strong>{plan.destination_place_name || plan.destination}</strong>
                   <span>Starting from</span><strong>{plan.origin}</strong>
                   <span>Travel mode</span><strong>{selectedMode?.label || plan.travel_mode}</strong>
                   <span>Google Maps travel time</span><strong>{plan.travel_duration_text || 'Unavailable'}</strong>

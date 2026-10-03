@@ -5,10 +5,20 @@ import { InvitationResult } from '../models/InvitationResult';
 const client = axios.create({
   baseURL: API_CONFIG.baseURL,
   timeout: API_CONFIG.timeout,
+  withCredentials: true,
   headers: {
     'Content-Type': 'application/json',
   },
 });
+
+const authClient = axios.create({
+  baseURL: API_CONFIG.baseURL.replace(/\/api\/v1\/?$/, ''), timeout: API_CONFIG.timeout,
+  withCredentials: true, headers: { 'Content-Type': 'application/json' },
+});
+export async function signup(payload) { return (await authClient.post('/api/auth/signup', payload)).data; }
+export async function login(email, password) { return (await authClient.post('/api/auth/login', { email, password })).data.user; }
+export async function getCurrentUser() { return (await authClient.get('/api/auth/me')).data.user; }
+export async function logout() { await authClient.post('/api/auth/logout'); }
 
 // Health check
 export async function checkHealth() {
@@ -45,6 +55,7 @@ export function getApiBaseUrl() {
 
 export default {
   checkHealth,
+  signup, login, getCurrentUser, logout,
   getPipelineStages,
   planTravel,
   analyzeInvitation,

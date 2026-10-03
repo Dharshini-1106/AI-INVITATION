@@ -6,6 +6,7 @@ import { InvitationResult } from '../models/InvitationResult';
 let client = axios.create({
   baseURL: API_CONFIG.baseURL,
   timeout: API_CONFIG.timeout,
+  withCredentials: true,
   headers: {
     'Content-Type': 'application/json',
   },
@@ -32,6 +33,7 @@ async function discoverBackend() {
           client = axios.create({
             baseURL: base,
             timeout: API_CONFIG.timeout,
+            withCredentials: true,
             headers: { 'Content-Type': 'application/json' },
           });
           // eslint-disable-next-line no-console
@@ -78,6 +80,37 @@ async function checkHealth() {
   const c = await resolvedClient();
   const res = await c.get('/health');
   return res.data;
+}
+
+async function authRequest(method, path, data) {
+  const c = await resolvedClient();
+  const baseURL = c.defaults.baseURL.replace(/\/api\/v1\/?$/, '');
+  const response = await axios.request({
+    method,
+    url: `/api/auth/${path}`,
+    baseURL,
+    data,
+    timeout: API_CONFIG.timeout,
+    withCredentials: true,
+    headers: { 'Content-Type': 'application/json' },
+  });
+  return response.data;
+}
+
+async function signup(payload) {
+  return authRequest('post', 'signup', payload);
+}
+
+async function login(email, password) {
+  return (await authRequest('post', 'login', { email, password })).user;
+}
+
+async function getCurrentUser() {
+  return (await authRequest('get', 'me')).user;
+}
+
+async function logout() {
+  return authRequest('post', 'logout', {});
 }
 
 // Get pipeline stages for progress display
@@ -138,6 +171,10 @@ async function getCalendarAuthUrl(sessionId) {
 
 export {
   checkHealth,
+  signup,
+  login,
+  getCurrentUser,
+  logout,
   getPipelineStages,
   analyzeInvitation,
   rediscoverBackend,
@@ -149,6 +186,10 @@ export {
 
 export default {
   checkHealth,
+  signup,
+  login,
+  getCurrentUser,
+  logout,
   getPipelineStages,
   analyzeInvitation,
   rediscoverBackend,

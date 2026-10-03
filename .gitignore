@@ -48,6 +48,9 @@ mobile/npm-debug.log*
 
 # Environment files
 .env
+.env.*
+!.env.example
+backend/.env
 .env.local
 .env.production
 

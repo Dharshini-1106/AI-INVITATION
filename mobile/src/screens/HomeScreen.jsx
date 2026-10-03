@@ -24,6 +24,9 @@ const styles = StyleSheet.create({
   brandIcon: { fontSize: 26, marginRight: 8 },
   brandName: { fontWeight: '700', fontSize: 18, color: colors.text },
 statusPill: { fontSize: 12, fontWeight: '600', paddingHorizontal: 12, paddingVertical: 6, borderRadius: 20 },
+  headerActions: { alignItems: 'flex-end', gap: 8 },
+  logoutButton: { paddingVertical: 6, paddingHorizontal: 12, borderRadius: 9, borderWidth: 1, borderColor: colors.border },
+  logoutText: { color: colors.text, fontSize: 12, fontWeight: '600' },
   backendAddr: { fontSize: 11, color: colors.textMuted, textAlign: 'center', marginTop: 8 },
   hero: { marginTop: 24, alignItems: 'center' },
   heroTitle: { fontSize: 30, fontWeight: '700', color: colors.text, textAlign: 'center', lineHeight: 36 },
@@ -57,7 +60,7 @@ statusPill: { fontSize: 12, fontWeight: '600', paddingHorizontal: 12, paddingVer
   featureText: { fontSize: 13, fontWeight: '500', color: colors.text },
 });
 
-export default function HomeScreen({ navigation }) {
+export default function HomeScreen({ navigation, onLogout }) {
 const [backendStatus, setBackendStatus] = useState('checking');
   const [backendAddr, setBackendAddr] = useState(API_CONFIG.baseURL);
 
@@ -101,12 +104,17 @@ const [backendStatus, setBackendStatus] = useState('checking');
             <Text style={styles.brandIcon}>📇</Text>
             <Text style={styles.brandName}>InvitationSense</Text>
           </View>
-<TouchableOpacity
-            onPress={recheckBackend}
-            style={[styles.statusPill, { backgroundColor: statusColor + '22' }]}
-          >
-            <Text style={{ color: statusColor }}>{statusText}</Text>
-          </TouchableOpacity>
+          <View style={styles.headerActions}>
+            <TouchableOpacity
+              onPress={recheckBackend}
+              style={[styles.statusPill, { backgroundColor: statusColor + '22' }]}
+            >
+              <Text style={{ color: statusColor }}>{statusText}</Text>
+            </TouchableOpacity>
+            <TouchableOpacity onPress={onLogout} style={styles.logoutButton} accessibilityRole="button">
+              <Text style={styles.logoutText}>Log out</Text>
+            </TouchableOpacity>
+          </View>
         </View>
 
         {backendStatus === 'online' && (

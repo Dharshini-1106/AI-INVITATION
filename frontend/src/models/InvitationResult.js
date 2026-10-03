@@ -10,6 +10,7 @@ export class InvitationEvent {
     end_time = '',
     venue = '',
     address = '',
+    contact_address = '',
     contact_number = '',
     timezone = '',
     additional_information = '',
@@ -26,6 +27,7 @@ export class InvitationEvent {
     this.end_time = end_time;
     this.venue = venue;
     this.address = address;
+    this.contact_address = contact_address;
     this.contact_number = contact_number;
     this.timezone = timezone;
     this.additional_information = additional_information;
@@ -56,6 +58,7 @@ export class InvitationResult {
     time = '',
     venue = '',
     address = '',
+    contact_address = '',
     contact_number = '',
     timezone = '',
     language = '',
@@ -82,6 +85,7 @@ export class InvitationResult {
     this.time = time;
     this.venue = venue;
     this.address = address;
+    this.contact_address = contact_address;
     this.contact_number = contact_number;
     this.timezone = timezone;
     this.language = language;

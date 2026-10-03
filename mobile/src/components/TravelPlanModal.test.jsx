@@ -46,6 +46,7 @@ jest.mock('expo-notifications', () => ({
 }));
 
 jest.mock('../services/api', () => ({
+  getResolvedBaseUrl: jest.fn(() => 'http://localhost:8000/api/v1'),
   planTravel: jest.fn(),
 }));
 
@@ -53,7 +54,7 @@ const event = {
   event_name: 'Wedding',
   date: 'October 2, 2026',
   time: '6:00 PM',
-  address: 'Convention Center',
+  address: '',
   venue: 'Convention Center',
   timezone: 'Asia/Kolkata',
 };
@@ -96,7 +97,7 @@ test('sends the current coordinates to the travel API', async () => {
   await tap(component.root, 'Plan My Travel');
   await tap(component.root, 'Use Current Location');
 
-  expect(component.root.find((node) => node.props?.children === 'Current location selected. Your precise location is not saved.')).toBeDefined();
+  expect(component.root.find((node) => node.props?.children === 'Starting location: Your current location is ready. It is used for this route calculation and is not saved in the app.')).toBeDefined();
 
   await tap(component.root, 'Calculate Travel Plan');
 
@@ -162,5 +163,29 @@ test('sends a manually entered starting location', async () => {
   expect(planTravel).toHaveBeenCalledWith(expect.objectContaining({
     origin: { type: 'manual', address: 'Central Station' },
     destination: { type: 'event', address: 'Convention Center' },
+  }));
+});
+
+test('maps Car to DRIVE and Bike / Scooter to TWO_WHEELER in the API request', async () => {
+  const car = renderModal();
+  await tap(car.root, 'Plan My Travel');
+  await tap(car.root, 'Enter Manually');
+  const carOrigin = car.root.findAllByType('TextInput').find((node) => node.props.placeholder === 'Starting location');
+  await act(async () => carOrigin.props.onChangeText('Thiruchendur, Tamil Nadu'));
+  await tap(car.root, 'Calculate Travel Plan');
+  expect(planTravel).toHaveBeenCalledWith(expect.objectContaining({
+    travel_mode: 'DRIVE',
+  }));
+
+  planTravel.mockClear();
+  const bike = renderModal();
+  await tap(bike.root, 'Plan My Travel');
+  await tap(bike.root, 'Enter Manually');
+  const bikeOrigin = bike.root.findAllByType('TextInput').find((node) => node.props.placeholder === 'Starting location');
+  await act(async () => bikeOrigin.props.onChangeText('Thiruchendur, Tamil Nadu'));
+  await tap(bike.root, 'Bike / Scooter');
+  await tap(bike.root, 'Calculate Travel Plan');
+  expect(planTravel).toHaveBeenCalledWith(expect.objectContaining({
+    travel_mode: 'TWO_WHEELER',
   }));
 });

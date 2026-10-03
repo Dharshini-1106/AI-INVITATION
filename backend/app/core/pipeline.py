@@ -12,6 +12,7 @@ toggles (``settings.use_*``) so the pipeline runs fast in lightweight/offline
 mode using rule-based fallbacks.
 """
 import logging
+import re
 import tempfile
 import time
 from pathlib import Path
@@ -53,9 +54,9 @@ def _entities_to_fields(entities) -> dict:
 def run_pipeline(image_bytes: bytes, filename: str, source: str = "gallery") -> dict:
     """Run the full invitation understanding pipeline on uploaded image bytes."""
     notes: List[str] = []
-    from ..utils.image_utils import load_image_bytes
+    from ..utils.image_utils import load_image_bytes, resize_to_max
 
-    img = load_image_bytes(image_bytes, filename)
+    img = resize_to_max(load_image_bytes(image_bytes, filename), max_side=2200)
     label = "CAMERA" if source == "camera" else "GALLERY"
     height, width = img.shape[:2]
     logger.info("[%s IMAGE] width=%d height=%d", label, width, height)
@@ -211,22 +212,43 @@ def run_pipeline(image_bytes: bytes, filename: str, source: str = "gallery") -> 
     # image gives us a fallback source of text without the cost of a
     # full rapidocr fallback.
     # ------------------------------------------------------------------
+    enhanced_diag = getattr(enhanced_ocr, "ocr_diagnostics", {})
+    primary_lines = getattr(enhanced_ocr, "lines", []) or []
+    primary_confidences = [float(line[2]) for line in primary_lines
+                           if len(line) > 2]
+    primary_avg_confidence = (
+        sum(primary_confidences) / len(primary_confidences)
+        if primary_confidences else 0.0
+    )
+    # A second full-page OCR pass is expensive. Keep it for weak/empty primary
+    # results; a normal multilingual result already contains enough text and
+    # should not pay for a duplicate full-image inference.
+    needs_secondary_ocr = (
+        len(primary_lines) < 10 or primary_avg_confidence < 0.35
+    )
     original_ocr = None
-    if settings.use_dual_ocr and enhanced_ocr is not None:
+    if settings.use_dual_ocr and enhanced_ocr is not None and needs_secondary_ocr:
         try:
             original_ocr = _ocr_one(img)
         except Exception as exc:
             logger.warning("[%s OCR] Original-image OCR pass failed (%s)", label, exc)
+    elif settings.use_dual_ocr:
+        logger.info("[%s OCR] Skipping duplicate original-image OCR (%d lines, avg confidence %.3f)",
+                    label, len(primary_lines), primary_avg_confidence)
 
     # Decorative couple names are commonly missed by full-page text detection.
     # OCR a focused, enlarged band so the names remain recoverable even when
     # the surrounding invitation text is detected successfully.
-    name_band_lines = _ocr_name_band(img)
+    name_band_lines = []
+    if not enhanced_diag.get("has_tamil", False):
+        name_band_lines = _ocr_name_band(img)
+    else:
+        logger.info("[%s OCR] Skipping English name-band OCR for Tamil-containing image",
+                    label)
 
     # Extract per-request OCR diagnostics from the primary OCR run.
 
     # Extract per-request OCR diagnostics from the primary OCR run.
-    enhanced_diag = getattr(enhanced_ocr, "ocr_diagnostics", {})
     if enhanced_diag:
         logger.info("[%s OCR] PRIMARY ENGINE: %s", label, enhanced_diag.get("primary_engine", "unknown"))
         logger.info("[%s OCR] PaddleOCR VERSION: %s", label, enhanced_diag.get("paddleocr_version", "N/A"))
@@ -323,7 +345,9 @@ def run_pipeline(image_bytes: bytes, filename: str, source: str = "gallery") -> 
                        if float(conf) > 0]
     ocr_confidence = round(
         sum(ocr_confidences) / len(ocr_confidences), 4
-    ) if ocr_confidences else None
+    ) if ocr_confidences else enhanced_diag.get(
+        "paddleocr_avg_confidence"
+    ) or None
     ocr_layout = [
         {
             "text": str(text).strip(),
@@ -378,6 +402,42 @@ def run_pipeline(image_bytes: bytes, filename: str, source: str = "gallery") -> 
         layout_regions,
         ocr_lines=ocr_layout,
     )
+    # OCR correction can turn a pronoun or invocation token into a plausible
+    # name. Explicit family-role prose in the untouched OCR is stronger than
+    # those corrected-text guesses, so reconcile it even when both fields are
+    # already populated. Keep every other parsed field unchanged.
+    has_named_participant = bool(
+        parsed.get("bride_name") or parsed.get("groom_name") or any(
+            person.get("role") in {"Bride", "Groom"}
+            for person in parsed.get("people", [])
+        )
+    )
+    explicit_relationship_pair = bool(re.search(
+        r"\bson\s+of\s+[A-Z][A-Za-z.'-]{2,}(?:\s+[A-Z][A-Za-z.'-]{2,}){0,2}"
+        r"\s+(?:with|and)\s+[A-Z][A-Za-z.'-]{2,}"
+        r"(?:\s+[A-Z][A-Za-z.'-]{2,}){0,2}\s+daughter\s+of\b",
+        raw_text,
+        re.IGNORECASE,
+    ))
+    if explicit_relationship_pair or not has_named_participant:
+        raw_participant_parse = parse_invitation({}, raw_text, layout_regions)
+        raw_people = [
+            person for person in raw_participant_parse.get("people", [])
+            if person.get("role") in {"Bride", "Groom"}
+        ]
+        if raw_people and (explicit_relationship_pair or not has_named_participant):
+            parsed["people"] = raw_people
+            parsed["bride_name"] = raw_participant_parse.get("bride_name", "")
+            parsed["groom_name"] = raw_participant_parse.get("groom_name", "")
+            for index, event in enumerate(parsed.get("events", [])):
+                raw_events = raw_participant_parse.get("events", [])
+                if index < len(raw_events):
+                    event["bride_name"] = raw_events[index].get("bride_name", "")
+                    event["groom_name"] = raw_events[index].get("groom_name", "")
+            logger.info(
+                "[%s PARTICIPANT DEBUG] Recovered participants from uncorrected OCR text: bride=%r groom=%r",
+                label, parsed.get("bride_name", ""), parsed.get("groom_name", ""),
+            )
     logger.info("[%s FINAL PARSER OUTPUT] bride_name=%r groom_name=%r",
                 label, parsed.get("bride_name", ""), parsed.get("groom_name", ""))
     logger.info("[%s OCR] Final parsed extraction: %s", label, {
@@ -400,7 +460,7 @@ def run_pipeline(image_bytes: bytes, filename: str, source: str = "gallery") -> 
         # Fallback to the merged engine list when the primary diagnostics
         # did not record a final engine explicitly.
         if ocr_engines:
-            final_ocr_engine = ocr_engines[0]
+            final_ocr_engine = ", ".join(ocr_engines)
         else:
             final_ocr_engine = "unknown"
     rapidocr_fallback_used = primary_diag.get("rapidocr_fallback_used", False)
@@ -415,6 +475,7 @@ def run_pipeline(image_bytes: bytes, filename: str, source: str = "gallery") -> 
         "end_time": parsed.get("end_time", ""),
         "venue": parsed.get("venue", ""),
         "address": parsed.get("address", ""),
+        "contact_address": parsed.get("contact_address", ""),
         "contact_number": parsed.get("contact_number", ""),
         "additional_information": parsed.get("additional_information", ""),
         "birthday_age": parsed.get("birthday_age", ""),

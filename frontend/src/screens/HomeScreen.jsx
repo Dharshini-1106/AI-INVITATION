@@ -2,10 +2,14 @@ import React, { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import colors from '../theme/colors';
 import { checkHealth } from '../services/api';
+import { logout } from '../services/api';
+import { useAuth } from '../auth/AuthContext';
 
 function HomeScreen() {
   const navigate = useNavigate();
   const [backendStatus, setBackendStatus] = useState('checking'); // checking | online | offline
+  const { user, setUser } = useAuth();
+  const handleLogout = async () => { try { await logout(); } finally { setUser(null); navigate('/login', { replace: true }); } };
 
   useEffect(() => {
     checkHealth()
@@ -29,6 +33,7 @@ function HomeScreen() {
         >
           {backendStatus === 'checking' ? '...' : backendStatus === 'online' ? '● Backend Online' : '● Backend Offline'}
         </span>
+        <button style={styles.logout} onClick={handleLogout}>Log out</button>
       </header>
 
       <main style={styles.main}>
@@ -105,6 +110,7 @@ const styles = {
     padding: '6px 12px',
     borderRadius: '20px',
   },
+  logout: { background: 'transparent', color: colors.text, border: `1px solid ${colors.border}`, borderRadius: '10px', padding: '8px 12px', cursor: 'pointer' },
   main: { flex: 1 },
   hero: { marginTop: '24px', textAlign: 'center' },
   heroTitle: {

@@ -8,7 +8,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from .config import settings
-from .api.routes import analyze, calendar, health, travel
+from .api.routes import analyze, calendar, health, travel, auth
 
 logging.basicConfig(
     level=logging.INFO,
@@ -87,25 +87,32 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-# CORS is permissive in development so any origin can call the API.
-# This includes the Expo web dev server (port 8081), the Vite frontend
-# (5173), the plain React dev server (3000), and any phone browser hitting
-# the PC's LAN IP. The API uses no cookies, so allow_credentials is off.
-_ALLOW_ALL_ORIGINS = ["*"]
+# Permit local development origins and private LAN addresses used by Expo Web.
+# Browser requests include credentials for the HttpOnly auth session cookie.
+_DEV_ORIGIN_REGEX = (
+    r"^https?://(localhost|127\.0\.0\.1|10(?:\.\d{1,3}){3}|"
+    r"192\.168(?:\.\d{1,3}){2}|172\.(?:1[6-9]|2\d|3[01])(?:\.\d{1,3}){2})(:\d+)?$"
+)
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=_ALLOW_ALL_ORIGINS,
-    allow_credentials=False,
+    allow_origins=[
+        "http://localhost:5173", "http://127.0.0.1:5173",
+        "http://localhost:8081", "http://127.0.0.1:8081",
+        "http://localhost:19006", "http://127.0.0.1:19006",
+    ],
+    allow_origin_regex=_DEV_ORIGIN_REGEX,
+    allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+app.include_router(auth.router, prefix="/api/auth", tags=["authentication"])
 
 app.include_router(health.router, prefix="/api/v1", tags=["health"])
 app.include_router(analyze.router, prefix="/api/v1", tags=["invitation"])
 app.include_router(calendar.router, prefix="/api/v1", tags=["calendar"])
 app.include_router(travel.router, prefix="/api/v1", tags=["travel"])
-
 
 @app.get("/")
 def root():

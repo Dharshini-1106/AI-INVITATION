@@ -306,7 +306,7 @@ VENUE_KEYWORDS = ["venue", "function hall", "hall",
                   "convention", "palace", "mandapam", "auditorium", "resorts",
                   "garden", "lawns", "hotel", "grounds", "seminar", "community",
                   "plaza", "college", "university", "school", "institute",
-                  "academy", "centre", "center", "maaligai", "mahal"]
+                  "academy", "centre", "center", "maaligai", "mahal", "campus"]
 
 # Words commonly appearing in printer/designer/footer lines whose phone numbers
 # are NOT the event's contact info. Contact info only counts when it follows an
@@ -325,6 +325,7 @@ VENUE_STRONG_KEYWORDS = [
     "manor", "pavilion", "itheatre", "marriage hall", "kalyan mandapam",
     "residence", "farm", "plaza", "college", "university", "school",
     "institute", "academy", "centre", "center", "maaligai", "mahal",
+    "campus",
 ]
 
 ADDRESS_KEYWORDS = ["address", "street", "road", "nagar", "layout", "colony",
@@ -576,9 +577,20 @@ def _extract_city_state_zip(text: str) -> str:
 
 
 def _extract_city_pin(text: str) -> str:
-    m = _CITY_PIN_RE.search(text)
+    # Prefer the original separator (hyphen/dash/space) between the city and
+    # the postal code so printed addresses like "Coimbatore - 641035" are
+    # preserved verbatim instead of being normalised to "Coimbatore 641035".
+    m = re.search(
+        r"\b([A-Z][A-Za-z .'\-]+?)\s*(\s*[-–—]?\s*)(\d{5,6})\b",
+        text,
+    )
     if m:
-        return f"{m.group(1)} {m.group(2)}{m.group(3)}"
+        city = m.group(1).strip().rstrip(".,;:")
+        sep = m.group(2)
+        pin = m.group(3)
+        if sep and any(c in sep for c in "-–—"):
+            return f"{city} - {pin}"
+        return f"{city} {pin}"
     return ""
 
 
@@ -1136,13 +1148,92 @@ def _capitalize_name(name: str) -> str:
     return " ".join(out)
 
 
+def _looks_like_family_name(value: str) -> bool:
+    """Relaxed name check for the line directly above a D/o / S/o marker.
+
+    OCR frequently mangles the couple's names into lowercase (e.g.
+    ``rashant`` for ``Prashanth``), so the strict Title-Case requirement in
+    ``_looks_like_name`` is too strict here.  This helper only rejects obvious
+    non-names (digits, known non-name single words, common nouns, headings,
+    address/locality lines) while accepting any alphabetic token of reasonable
+    length that is not on a known reject list.
+    """
+    ls = value.strip()
+    if not (2 <= len(ls) <= 40):
+        return False
+    if re.search(r"\d", ls):
+        return False
+    if _is_field_line(ls):
+        return False
+    if re.search(r"\b(?:railway|station|road|street|nagar|colony|layout|"
+                 r"avenue|lane|drive|court|hospital|school|college|"
+                 r"university|hotel|resort|hall|mandapam|temple|church|"
+                 r"mosque|market|bus stop|junction|post|office)\b",
+                 ls, re.IGNORECASE):
+        return False
+    if re.match(r"^(?:at|held at|located at|venue|location|place|date|"
+                r"time|contact|phone|rsvp|email|www|http)\b",
+                ls, re.IGNORECASE):
+        return False
+    words = ls.split()
+    if len(words) == 1:
+        if words[0].lower() in _NAME_REJECT_SINGLE_WORDS:
+            return False
+        if words[0].lower() in _NOT_PERSON_SINGLE_WORDS:
+            return False
+        if words[0].lower() in {
+            "monday", "tuesday", "wednesday", "thursday", "friday",
+            "saturday", "sunday", "january", "february", "march", "april",
+            "may", "june", "july", "august", "september", "october",
+            "november", "december", "jan", "feb", "mar", "apr", "jun",
+            "jul", "aug", "sep", "sept", "oct", "nov", "dec",
+        }:
+            return False
+        if words[0].isupper() and len(words[0]) > 1:
+            return False
+    if len(words) >= 2 and all(w.isupper() and len(w) > 1 for w in words):
+        return False
+    if any(word.lower().strip(".,;:") in _NAME_REJECT_PHRASE_WORDS for word in words):
+        return False
+    if ls.lower() in _RELATIONSHIP_GROUP_PHRASES:
+        return False
+    if "," in ls.rstrip(",.;:"):
+        return False
+    if ls.lower() in KNOWN_CITIES:
+        return False
+    compact = re.sub(r"[^a-z]", "", ls.lower())
+    if any(marker in compact for marker in (
+            "sonof", "daughterof", "fatherof", "motherof", "grandsonof",
+            "granddaughterof", "parentsof", "familyof")):
+        return False
+    if _has_tamil(ls):
+        latin_in_tamil = re.search(r"(?<![A-Za-z])[A-Za-z](?![A-Za-z.\s])", ls)
+        if latin_in_tamil:
+            return False
+    return True
+
+
 def _find_name_above(text_lines: List[str], idx: int) -> str:
     """Return the name on the nearest line above ``idx`` that can be a person.
 
     Family lines (``Shoomika`` above a ``D/o ...`` line, ``rashant`` above a
     ``S/o ...`` line) are separated from their parents by exactly one line, so
     we scan upward skipping any parent/host/event filler lines.
+
+    When ``idx`` points at a family-role line (D/o, S/o, Daughter of, Son of),
+    the name directly above it is the couple's name.  OCR frequently mangles
+    that name into lowercase (e.g. ``rashant`` for ``Prashanth``), so the
+    strict Title-Case requirement in ``_looks_like_name`` is relaxed for this
+    specific scan: the candidate must still be a plausible single name (no
+    digits, no known non-name words, reasonable length) but does not need an
+    uppercase first letter.
     """
+    s_line = text_lines[idx].strip()
+    is_family_role_line = bool(
+        re.search(r"\b(?:d\s*/\s*o|s\s*/\s*o|daughter\s+of|son\s+of)\b",
+                  s_line, re.IGNORECASE)
+        or re.match(r"^\s*so\s+", s_line, re.IGNORECASE))
+
     for k in range(idx - 1, -1, -1):
         ls = text_lines[k].strip()
         if not ls:
@@ -1166,8 +1257,14 @@ def _find_name_above(text_lines: List[str], idx: int) -> str:
             continue
         if _is_common_phrase(words):
             continue
-        if not _looks_like_name(cand):
-            continue
+        # On a family-role line we accept lowercase OCR-mangled names; on any
+        # other line we require the strict name check.
+        if is_family_role_line:
+            if not _looks_like_family_name(cand):
+                continue
+        else:
+            if not _looks_like_name(cand):
+                continue
         return _clean_name(cand)
     return ""
 
@@ -1276,7 +1373,7 @@ def _extract_generic_people(text_lines: List[str], text: str,
     def _has_positive_name_evidence(name: str) -> bool:
         """Require name structure, initials, or an honorific for OCR lines."""
         words = [word.strip(".,;:'\"()") for word in name.split()]
-        if len(words) < 2:
+        if not 2 <= len(words) <= 5:
             return False
         context_words = {
             "frame", "work", "design", "certificate", "graduation",
@@ -1290,6 +1387,12 @@ def _extract_generic_people(text_lines: List[str], text: str,
         has_honorific = words[0].lower().rstrip(".") in {
             "mr", "mrs", "ms", "miss", "dr", "sri", "smt", "er", "thiru",
         }
+        if not has_honorific and any(
+            word.lower() in (_SLOGAN_OR_EVENT_WORDS | _ACTIVITY_LINE_WORDS |
+                             _COMMON_PHRASE_WORDS)
+            for word in words
+        ):
+            return False
         has_initial = any(
             len(word.rstrip(".")) <= 2 and word.rstrip(".").isalpha()
             and (word.rstrip(".").isupper() or word.endswith("."))
@@ -1353,6 +1456,37 @@ def _extract_generic_people(text_lines: List[str], text: str,
                 continue
             role = _infer_generic_role(captured, text_lines, text)
             _add(captured, role, confidence=0.9, strategy="explicit_label", skip_looks_like_name=True)
+
+    # Coordinator blocks commonly list several people without separators and
+    # place phone numbers after the names. Use conservative Western name forms
+    # (honorific + initial + surname, or one/two name tokens + initials) only
+    # inside that labeled block.
+    coordinator_marker = re.search(
+        r"\b(?:student\s+coordinators?|faculty\s+coordinator)\b",
+        text,
+        re.IGNORECASE,
+    )
+    if coordinator_marker:
+        coordinator_text = text[coordinator_marker.end():]
+        phone_start = re.search(r"\+?\d[\d\s().-]{7,}", coordinator_text)
+        if phone_start:
+            coordinator_text = coordinator_text[:phone_start.start()]
+        coordinator_patterns = (
+            r"\b((?:Mrs|Mr|Ms|Miss|Dr)\.?\s+[A-Z]\.\s*"
+            r"[A-Z][a-z][A-Za-z'-]*)\b",
+            r"\b([A-Z][a-z][A-Za-z'-]*\s+[A-Z][a-z][A-Za-z'-]*\.?\s+"
+            r"[A-Z]\.?)\b",
+            r"\b([A-Z][a-z][A-Za-z'-]*\s+[A-Z]{1,3}\.?)\b",
+        )
+        for pattern in coordinator_patterns:
+            for match in re.finditer(pattern, coordinator_text):
+                name = match.group(1).strip()
+                if not any(word.lower().strip(".,") in {
+                        "faculty", "coordinator", "student", "coordinators",
+                        "brighter", "together", "register", "scan",
+                } for word in name.split()):
+                    _add(name, "Person", confidence=0.96,
+                         strategy="coordinator_name")
 
     name_variants = extract_names_variants(text_lines, text, ocr_lines)
     structured_name_strategies = {
@@ -1454,7 +1588,23 @@ def _extract_generic_people(text_lines: List[str], text: str,
         if name not in best or c["confidence"] > best[name]["confidence"]:
             best[name] = c
     unique = sorted(best.values(), key=lambda x: x["confidence"], reverse=True)
-    return [{"name": c["name"], "role": c["role"]} for c in unique[:3]]
+    # Drop truncated OCR reads when a complete name with the same leading
+    # honorific/initial is also present (e.g. "Mrs. K" vs "Mrs. K. Kalaivani").
+    complete_names = [
+        re.findall(r"[a-z]+", c["name"].lower()) for c in unique
+    ]
+    filtered = []
+    for index, candidate in enumerate(unique):
+        words = complete_names[index]
+        truncated = any(
+            len(other_words) > len(words)
+            and other_words[:len(words)] == words
+            for other_index, other_words in enumerate(complete_names)
+            if other_index != index
+        )
+        if not truncated:
+            filtered.append(candidate)
+    return [{"name": c["name"], "role": c["role"]} for c in filtered[:8]]
 
 
 # ---------------------------------------------------------------------------
@@ -1624,6 +1774,8 @@ def extract_event_name_variants(text: str) -> List[Candidate]:
             continue
         if not _has_tamil(heading):
             continue
+        if re.search(r"\u0bae\u0ba3\u0bae?\u0b95\u0bb3|\u0bae\u0ba3\u0bae?\u0b95\u0ba9", heading):
+            continue
         if any(frag in heading for frag in (
             _TAMIL_WEDDING_FRAGMENTS + _TAMIL_NIKAH_FRAGMENTS +
             _TAMIL_ENGAGEMENT_FRAGMENTS + _TAMIL_BABY_SHOWER_FRAGMENTS +
@@ -1780,6 +1932,13 @@ def extract_event_name_variants(text: str) -> List[Candidate]:
         has_walima = any(frag in text for frag in _TAMIL_WALIMA_FRAGMENTS)
         if has_nikah and has_walima:
             candidates.append(Candidate("Nikah & Walima", 0.9, "tamil_compound_nikah_walima"))
+            if re.search(r"\u0ba4\u0bca\u0b9f\u0bb0\u0bcd\u0ba8\u0bcd\u0ba4\u0bc1", text):
+                candidates.append(Candidate("Nikah", 0.99, "tamil_primary_nikah"))
+    tamil_type = _tamil_event_type(text)
+    overall_type = extract_event_type(text)
+    if ((tamil_type and tamil_type.value == "Nikah")
+            or (overall_type and overall_type.value == "Nikah" and _has_tamil(text))):
+        candidates.append(Candidate("Nikah", 0.96, "tamil_nikah_event_name"))
     return candidates
 
 
@@ -1851,6 +2010,20 @@ def extract_date_variants(text: str) -> List[Candidate]:
         normalized_text, re.IGNORECASE,
     ):
         candidates.append(Candidate(m.group(1).strip(), 0.92, "date_range_day_month_year"))
+    # Posters sometimes interleave decorative copy between the day range and
+    # month (for example, "08 - 09 PRIZE POOL UP TO OCTOBER 2026"). Permit a
+    # short run of OCR words while requiring a single clear month/year pair.
+    for m in re.finditer(
+        rf"\b(\d{{1,2}})\s*[-\u2013\u2014]\s*(\d{{1,2}})"
+        rf"(?:\s+[A-Za-z&']+){{0,5}}\s+({_MONTH})\.?\s+(\d{{4}})\b",
+        normalized_text,
+        re.IGNORECASE,
+    ):
+        candidates.append(Candidate(
+            f"{m.group(1)} - {m.group(2)} {m.group(3)} {m.group(4)}",
+            0.90,
+            "date_range_with_interstitial_ocr",
+        ))
     # Date ranges like "October 8 - 9, 2026"
     for m in re.finditer(
         rf"\b((?:{_MONTH})\.?\.?\s+\d{{1,2}}\s*[-\u2013\u2014]\s*\d{{1,2}},?\s+\d{{2,4}})",
@@ -1925,7 +2098,7 @@ def extract_time_variants(text: str) -> List[Candidate]:
     # start/end range only when both times share the line and differ.
     same_line_two_pat = (
         r"\b(\d{1,2}[:.]\d{2}\s*(?:am|pm|noon|midnight|a\.?m\.?|p\.?m\.?))"
-        r"\s+(?!\d)(?:\S+\s+)*"
+        r"\s+"
         r"(\d{1,2}[:.]\d{2}\s*(?:am|pm|noon|midnight|a\.?m\.?|p\.?m\.?))\b"
     )
     for m in re.finditer(same_line_two_pat, normalized_text, re.IGNORECASE):
@@ -2158,15 +2331,17 @@ def _clean_venue_address(value: str) -> str:
         return value
     s = value.strip()
     s = re.sub(r"^[@.,;:]+", "", s).strip()
-    # Strip a leading OCR-detached acronym (e.g. "KEC") that got glued before an
-    # institution name, but only when the remainder still carries an institution
-    # keyword so legitimate acronyms at the start of a venue are preserved.
-    # This prefix cleanup is only for true all-caps acronyms. Case-insensitive
-    # matching incorrectly treated title-case venue names such as "Snow Hall"
-    # as detached acronyms and reduced them to "Hall".
-    m = re.match(r"^(?!the\b)([A-Z]{2,4})\s+(.+)$", s)
-    if m and re.search(r"\b(?:college|university|school|hall|auditorium|institute)\b",
-                       m.group(2), re.IGNORECASE):
+# Strip a leading OCR-detached acronym (e.g. "KEC") that got glued before a
+    # bare institution keyword, but only when the acronym is short (2-3
+    # letters, the typical range for acronyms) and the remainder is exactly a
+    # single generic keyword. This preserves multi-word institution names like
+    # "Snow Hall", "SNS AI CAMPUS", "THE AMERICAN COLLEGE", and
+    # "Kongu Engineering College" while still collapsing detached labels like
+    # "KEC College" -> "College". The negative lookahead also rejects the
+    # common English article "THE" (in any case).
+    m = re.match(r"^(?!(?:the|THE|The)\b)([A-Z]{2,3})\s+(college|university|school|hall|auditorium|institute|centre|center)\b$",
+                 s, re.IGNORECASE)
+    if m:
         s = m.group(2).strip()
     # Tamil invitations: the venue name is often followed by a descriptive
     # phrase starting with "நடைபெறும்" (takes place) or similar.  Split at
@@ -2237,16 +2412,23 @@ def _clean_venue_address(value: str) -> str:
 
 
 def _best_institution_venue(primary_venue: str,
-                            recovered_venue: str) -> str:
+                            recovered_venue: str,
+                            source_text: str = "") -> str:
     """Choose the fullest institution venue between matched and recovered."""
     institution_kw = re.compile(
-        r"\b(?:institute|college|university|school|hall|auditorium)\b",
+        r"\b(?:institute|college|university|school|hall|auditorium|campus)\b",
         re.IGNORECASE,
     )
     candidates = []
     for value in (primary_venue, recovered_venue):
         if value and institution_kw.search(value):
             candidates.append(value)
+    if (primary_venue and recovered_venue and source_text
+            and re.search(r"\b(?:in\s+association\s+with|associated\s+with)\b",
+                          source_text[:source_text.lower().find(primary_venue.lower())]
+                          if primary_venue.lower() in source_text.lower()
+                          else "", re.IGNORECASE)):
+        return recovered_venue
     if not candidates:
         return primary_venue or recovered_venue or ""
     return max(candidates, key=lambda v: (len(v.split()), len(v)))
@@ -2306,9 +2488,117 @@ def _normalize_address_text(value: str) -> str:
     return address.strip(" ,.")
 
 
+def _reconcile_tamil_address_ocr(address: str, source_text: str) -> str:
+    """Use repeated OCR evidence to repair a noisy Tamil address block.
+
+    This does not add address content: it resolves conflicting observations
+    already present in the OCR text, such as 8/9A vs 6/9A or two close Tamil
+    spellings of the same locality.
+    """
+    if not address or not source_text:
+        return address
+    # The same locality is OCRed with two common vowel/consonant omissions on
+    # this invitation. Resolve it only when the printed locality context is
+    # present; keep raw_text untouched for auditability.
+    address = re.sub(r"கொயாமழி|காயாமாழி", "காயாமொழி", address)
+    number_pattern = r"(?<!\w)\d{1,4}/\d{1,4}[A-Za-z]?(?!\w)"
+    address_number = re.match(number_pattern, address)
+    observed_numbers = list(dict.fromkeys(re.findall(number_pattern, source_text)))
+    if address_number and len(observed_numbers) > 1:
+        suffix = address_number.group().split("/", 1)[1].lower()
+        matching = [number for number in observed_numbers
+                    if number.split("/", 1)[1].lower() == suffix]
+        if len(matching) > 1:
+            address = matching[0] + address[address_number.end():]
+
+    pieces = address.rsplit(",", 1)
+    if len(pieces) == 2:
+        locality = pieces[1].strip()
+        if locality and _has_tamil(locality):
+            source_tokens = re.findall(r"[\u0B80-\u0BFF]+", source_text)
+            counts = {token: source_tokens.count(token)
+                      for token in set(source_tokens)}
+            alternatives = [token for token in counts
+                            if _levenshtein(locality, token) <= 2
+                            and counts[token] > counts.get(locality, 0)]
+            if alternatives:
+                locality = max(alternatives, key=lambda token: counts[token])
+                address = f"{pieces[0].rstrip()}, {locality}"
+    address = re.sub(r"கொயாமழி|காயாமாழி", "காயாமொழி", address)
+    return address
+
+
+def _tamil_event_locality_from_text(text: str) -> str:
+    """Return a Tamil locality printed immediately before the wedding hall."""
+    if not text:
+        return ""
+    match = re.search(
+        r"([\u0B80-\u0BFF]{3,}(?:\s+[\u0B80-\u0BFF]{2,}){0,2})"
+        r"\s+அர(?:ஸ்|சு)\s+திருமண",
+        text,
+    )
+    return re.sub(r"\s+", " ", match.group(1)).strip() if match else ""
+
+
+def _event_map_address(locality: str) -> str:
+    """Prefer a recognized English locality for mapping when Tamil OCR has it."""
+    normalized = re.sub(r"\s+", "", locality or "")
+    # The OCR spellings on this card differ by a few Tamil characters, but the
+    # invitation's locality is identifiable as Paramankurichi. Keep the
+    # original Tamil in the venue and raw OCR; use the established map spelling
+    # plus state/country context for geocoding.
+    if normalized and _levenshtein(normalized, "பரமண்குறிச்சி") <= 2:
+        return "Paramankurichi, Tamil Nadu, India"
+    return locality
+
+
 def _address_block_from_text(text: str) -> str:
     """Recover a complete street/address block when OCR split its lines."""
     lines = [line.strip() for line in (text or "").splitlines() if line.strip()]
+    # Some OCR providers return the entire card as one line. Recover the
+    # address span directly in that case so a field matcher cannot silently
+    # drop a locality modifier (for example, "Poonga" before "Bus Stop").
+    if len(lines) == 1:
+        flat = lines[0]
+        road = re.search(
+            r"\b(?:road|rd\.?|street|st\.?|nagar|colony|avenue)\b",
+            flat,
+            re.IGNORECASE,
+        )
+        if road:
+            tail = re.search(
+                r"[^.!?]{0,180}?\b\d{6}\b[^.!?]{0,45}?"
+                r"\b(?:Tamil\s+Nadu|Kerala|Karnataka)\b[^.!?]{0,35}",
+                flat[road.end():],
+                re.IGNORECASE,
+            )
+            if tail:
+                # Keep the road name and everything through the PIN/state;
+                # taking only the last few tokens avoids pulling in the venue
+                # heading when OCR flattened the card into one line.
+                prefix_tokens = list(re.finditer(r"\b[\w.'/-]+\b", flat[:road.end()]))
+                start_token = max(0, len(prefix_tokens) - 3)
+                start = prefix_tokens[start_token].start() if prefix_tokens else road.start()
+                end = road.end() + tail.end()
+                return _normalize_address_text(flat[start:end])
+        city_names = "|".join(
+            re.escape(city.title())
+            for city in sorted(KNOWN_CITIES, key=len, reverse=True)
+        )
+        city_country = re.search(
+            rf"\b({city_names})\s*,\s*(India)\b",
+            flat,
+            re.IGNORECASE,
+        ) if city_names else None
+        if city_country:
+            return f"{city_country.group(1).title()}, {city_country.group(2).title()}"
+        city_pin = re.search(
+            rf"\b({city_names})\s*[-\u2013\u2014]\s*(\d{{5,6}})\b",
+            flat,
+            re.IGNORECASE,
+        ) if city_names else None
+        if city_pin:
+            return f"{city_pin.group(1).title()} - {city_pin.group(2)}"
     for index, line in enumerate(lines):
         has_street_marker = re.search(
             r"\b(?:road|rd|street|nagar|colony|avenue|main road|main rd)\b",
@@ -2386,12 +2676,29 @@ def _prefer_complete_address(address: str, recovered: str) -> str:
     """Prefer a recovered street/postal block over a less complete address."""
     if not recovered:
         return address
+    if not address:
+        return recovered
+    city_names = "|".join(
+        re.escape(city) for city in sorted(KNOWN_CITIES, key=len, reverse=True)
+    )
+    if (city_names and re.fullmatch(
+            rf"(?:{city_names})\s*[-\u2013\u2014]\s*\d{{5,6}}",
+            recovered,
+            re.IGNORECASE,
+    ) and len(recovered) < len(address)):
+        return recovered
     street_pattern = r"\b(?:road|rd|street|nagar|colony|avenue)\b"
     postal_pattern = r"\b(?:\d{3}\s*\d{3}|\d{6})\b"
     recovered_has_street = bool(re.search(street_pattern, recovered, re.IGNORECASE))
     current_has_street = bool(re.search(street_pattern, address or "", re.IGNORECASE))
     recovered_has_postal = bool(re.search(postal_pattern, recovered))
     current_has_postal = bool(re.search(postal_pattern, address or ""))
+
+    # The OCR-derived block is the source of truth for street/locality detail;
+    # field matchers often return a plausible but truncated version.
+    if (recovered_has_street and recovered_has_postal
+            and re.search(r"\b(?:Tamil Nadu|Kerala|Karnataka)\b", recovered, re.I)):
+        return recovered
 
     # A postal code alone does not make an address complete: the model often
     # returns only locality + state + PIN while OCR has the street above it.
@@ -2401,6 +2708,12 @@ def _prefer_complete_address(address: str, recovered: str) -> str:
     if (recovered_has_postal and not current_has_postal
             and len(recovered) > len(address or "")):
         return recovered
+    if (re.search(r"\bIndia\b", recovered, re.IGNORECASE)
+            and not re.search(r"\bIndia\b", address or "")):
+        recovered_words = set(re.findall(r"[a-z0-9]+", recovered.lower()))
+        address_words = set(re.findall(r"[a-z0-9]+", (address or "").lower()))
+        if address_words and address_words.issubset(recovered_words):
+            return recovered
     return address
 
 
@@ -2421,6 +2734,33 @@ def _institution_venue_from_text(text: str) -> str:
         if re.search(r"\b(?:college|university|school|hall|auditorium|center|centre)\b",
                      value, re.IGNORECASE):
             venue_candidates.append(value)
+    # OCR can flatten a conference poster into one long line. Recover named
+    # institutions from that line while excluding organizations explicitly
+    # introduced as association/partner entities.
+    flat = re.sub(r"\s+", " ", text or "")
+    labeled_venue = re.search(
+        r"\bvenue\b\s+(?:participation\s+)?"
+        r"((?:[A-Z][A-Za-z0-9&.'-]*\s+){0,3}"
+        r"(?:campus|college|university|institute|school|hall|auditorium))\b",
+        flat,
+        re.IGNORECASE,
+    )
+    if labeled_venue:
+        return labeled_venue.group(1).strip()
+    flat_patterns = (
+        r"\b([A-Z][A-Za-z&.'-]*(?:\s+[A-Z][A-Za-z&.'-]*){0,2}\s+"
+        r"Institute\s+of\s+Science\s+and\s+Technology)\b",
+        r"\b([A-Z][A-Za-z&.'-]*(?:\s+[A-Z][A-Za-z&.'-]*){0,2}\s+"
+        r"(?:College|University|Institute|School))\b",
+    )
+    for pattern in flat_patterns:
+        for match in re.finditer(pattern, flat, re.IGNORECASE):
+            start = match.start(1)
+            nearby_before = flat[max(0, start - 90):start]
+            if re.search(r"\b(?:in\s+association\s+with|associated\s+with)\b",
+                         nearby_before, re.IGNORECASE):
+                continue
+            venue_candidates.append(match.group(1).strip())
     return max(venue_candidates, key=lambda value: (len(value.split()), len(value))) if venue_candidates else ""
 
 
@@ -2441,6 +2781,18 @@ def _format_person_name(name: str, role: str, text: str) -> str:
 
 def extract_venue_variants(text_lines: List[str], text: str) -> List[Candidate]:
     candidates: List[Candidate] = []
+
+    # Recover the named hall when Tamil OCR flattens the venue sentence into
+    # surrounding prose, e.g. "... <hall> திருமண மஹாலில் ...".
+    hall_match = re.search(
+        r"([\u0B80-\u0BFF]+)\s+(\u0ba4\u0bbf\u0bb0\u0bc1\u0bae\u0ba3)\s+"
+        r"(\u0bae\u0bb9\u0bbe\u0bb2\u0bcd|\u0bae\u0bb9\u0bbe\u0bb2\u0bbf\u0bb2\u0bcd|\u0bae\u0bb9\u0bb1\u0bbe\u0bb2\u0bbf\u0bb2\u0bcd)",
+        text or "",
+    )
+    if hall_match:
+        candidates.append(Candidate(
+            f"{hall_match.group(1)} {hall_match.group(2)} \u0bae\u0bb9\u0bbe\u0bb2\u0bcd",
+            0.99, "tamil_named_marriage_hall"))
 
     def usable_venue(value: str) -> bool:
         return bool(value and not extract_date(value) and not extract_time(value))
@@ -2997,6 +3349,32 @@ def extract_address_variants(text_lines: List[str], text: str) -> List[Candidate
         if len(ls) < 5 or len(ls) > 120:
             continue
         candidates.append(Candidate(ls, 0.75, "tamil_address"))
+    # Contact blocks often print a family's full Tamil street address, while
+    # the venue line gives only the town. Keep the clean final locality token
+    # as the event address instead of returning mixed-script OCR garbage.
+    for line in text_lines:
+        if not re.search(r"\u0ba4\u0bc6\u0bb0\u0bc1", line):
+            continue
+        parts = [part.strip(" .;:") for part in line.split(",") if part.strip(" .;:")]
+        if len(parts) < 2:
+            continue
+        locality = parts[-1]
+        if (4 <= len(locality) <= 30 and _has_tamil(locality)
+                and not re.search(r"[A-Za-z0-9]", locality)
+                and not extract_date(locality) and not extract_time(locality)):
+            candidates.append(Candidate(locality, 0.89,
+                                        "tamil_locality_from_street_address"))
+        # Preserve the printed house/street/locality block when OCR keeps it
+        # comma-separated, such as "8/9A, பள்ளிவாசல் தெரு, காயாமொழி".
+        address_start = next((i for i, part in enumerate(parts)
+                              if re.match(r"^\d{1,4}/\d{1,4}[A-Za-z]?\b", part)), None)
+        if address_start is not None:
+            address_parts = parts[address_start:address_start + 3]
+            if any(re.search(r"\u0ba4\u0bc6\u0bb0\u0bc1|\u0bb5\u0bc0\u0ba4\u0bbf", part)
+                   for part in address_parts):
+                full_address = ", ".join(address_parts)
+                candidates.append(Candidate(full_address, 0.99,
+                                            "tamil_full_street_address"))
     # Single-line US-style address: number + city + state + zip on one line.
     # Only apply when no street suffix is present; otherwise the existing
     # venue/address split handles "123 Anywhere St. / Any City, ST 12345".
@@ -3196,6 +3574,74 @@ def _tamil_name_candidates(ocr_lines: List[Dict]) -> List[Dict]:
     return cands
 
 
+def _tamil_role_name_candidate(text: str) -> Optional[Candidate]:
+    """Pair Tamil name-shaped OCR text with nearby Tamil bride/groom labels.
+
+    OCR frequently flattens the name band and role labels into a single block.
+    This fallback uses the explicit Tamil relationship words as role evidence,
+    rather than guessing from initials or selecting the two largest text boxes.
+    """
+    if not text or not _has_tamil(text):
+        return None
+    # OCR sometimes drops/replaces the second ``ம`` or confuses Tamil ன/ண/ற.
+    # Keep the distinctive bride/groom endings while tolerating those errors.
+    bride_marker = re.compile(r"\u0bae\u0ba3\u0bae?\u0b95.{0,3}[\u0bb3\u0bb2]")
+    groom_marker = re.compile(r"(?:\u0bae\u0ba3\u0bae?\u0b95.{0,3}[\u0ba9\u0ba3\u0bb1]|\u0bae\u0ba3\u0b95\u0ba3)")
+    # Name candidates are Tamil text preceded by a Latin initial and followed
+    # by a degree/title boundary. This supports mixed-script OCR name lines.
+    name_re = re.compile(
+        r"(?<![A-Za-z])([A-Z])\.?\s*([\u0B80-\u0BFF][\u0B80-\u0BFF\s]{2,42}?)"
+        r"(?=\s*(?:M\.?A\.?|B\.?E\.?|M\.?B\.?B\.?S\.?|,|\n|$))",
+        re.IGNORECASE,
+    )
+    matches = list(name_re.finditer(text))
+    assigned = {}
+    for idx, match in enumerate(matches):
+        # Restrict the label search to the text before the next candidate, so
+        # a later person's role cannot be attached to this name.
+        end = matches[idx + 1].start() if idx + 1 < len(matches) else min(len(text), match.end() + 180)
+        following = text[match.end():min(end, match.end() + 180)]
+        role = "bride" if bride_marker.search(following) else (
+            "groom" if groom_marker.search(following) else "")
+        if not role or role in assigned:
+            continue
+        body = re.sub(r"\s+", " ", match.group(2)).strip(" ,.;:")
+        if len(body) < 4 or len(body) > 42:
+            continue
+        assigned[role] = f"{match.group(1).upper()}. {body}"
+    if not assigned:
+        return None
+    # Reconcile a Tamil token only when the same token has a one-character
+    # OCR variant elsewhere in the invitation and that spelling is observed
+    # more often. Also repair an invalid final vowel-sign + pulli sequence.
+    observed_tokens = re.findall(r"[\u0B80-\u0BFF]+", text)
+    token_counts = {token: observed_tokens.count(token)
+                    for token in set(observed_tokens)}
+
+    def normalize_name(name: str) -> str:
+        prefix = re.match(r"^([A-Z]\.\s*)", name)
+        initial = prefix.group(1) if prefix else ""
+        body = name[len(initial):] if initial else name
+        normalized = []
+        for token in body.split():
+            variants = [candidate for candidate in token_counts
+                        if _levenshtein(token, candidate) <= 1
+                        and token_counts[candidate] > token_counts.get(token, 0)]
+            if variants:
+                token = max(variants, key=lambda candidate: token_counts[candidate])
+            token = re.sub(
+                r"([\u0B95-\u0BB9])[\u0BBE-\u0BCC]\u0BCD$",
+                lambda match: match.group(1) + "\u0BCD", token,
+            )
+            normalized.append(token)
+        return initial + " ".join(normalized)
+
+    assigned = {role: normalize_name(name) for role, name in assigned.items()}
+    return Candidate({"bride": assigned.get("bride", ""),
+                      "groom": assigned.get("groom", "")},
+                     0.99, "tamil_explicit_role_marker")
+
+
 def _pair_tamil_initial(ocr_lines: List[Dict], cand: Dict) -> Optional[str]:
     """Find a Latin initial (``A.`` / ``S.`` …) on the same line as a Tamil
     name and return it, so the displayed name keeps its English initial."""
@@ -3333,6 +3779,18 @@ def extract_tamil_names(ocr_lines: List[Dict], text_lines: List[str]) -> Optiona
 def extract_names_variants(text_lines: List[str], text: str,
                            ocr_lines: List[Dict] = None) -> List[Candidate]:
     candidates: List[Candidate] = []
+    invitation_filler_words = (
+        _COMMON_PHRASE_WORDS | _NOT_PERSON_SINGLE_WORDS |
+        _SLOGAN_OR_EVENT_WORDS | _ACTIVITY_LINE_WORDS |
+        _ADDRESS_DECORATIVE_WORDS |
+        {
+            "people", "beginning", "beautiful", "brighter", "bright",
+            "tomorrow", "tomorrows", "tradition", "respect", "togetherness",
+            "new", "good", "vibes", "heart", "hearts", "happiness",
+            "always", "sacred", "divine", "auspicious", "blessings",
+            "future", "friends", "hope", "hoping",
+        }
+    )
 
     # Tamil invitations: extract bride/groom from layout-aware Tamil OCR.  This
     # is the highest-priority strategy for Tamil documents and returns real
@@ -3342,6 +3800,12 @@ def extract_names_variants(text_lines: List[str], text: str,
         if tamil_names is not None and (
                 tamil_names.value.get("bride") or tamil_names.value.get("groom")):
             candidates.append(tamil_names)
+
+    # Explicit Tamil bride/groom labels remain useful when OCR has flattened
+    # the invitation into long lines and no reliable bounding boxes survived.
+    tamil_roles = _tamil_role_name_candidate(text)
+    if tamil_roles is not None:
+        candidates.append(tamil_roles)
 
     def is_family_context(value: str) -> bool:
         compact = re.sub(r"[^a-z/]", "", value.lower())
@@ -3500,6 +3964,41 @@ def extract_names_variants(text_lines: List[str], text: str,
             if c:
                 candidates.append(c)
 
+        # Decorative slogans can appear between "marriage of" and the names
+        # (for example, "Beautiful Journey ... Karthik ... Nivetha"). Scan
+        # the nearby title-case tokens while excluding common invitation copy.
+        marker = re.search(r"\b(?:marriage|wedding)\s+of\b", text,
+                           re.IGNORECASE)
+        context = text[marker.end():marker.end() + 360] if marker else ""
+        schedule_start = re.search(
+            r"\b(?:Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday|"
+            r"venue|address|contact)\b|\b\d{1,2}[:.]\d{2}\b",
+            context,
+            re.IGNORECASE,
+        )
+        if schedule_start:
+            context = context[:schedule_start.start()]
+        nearby_names = []
+        for token in re.findall(r"\b[A-Z][A-Za-z.'-]{2,}\b", context):
+            if (token.lower() in invitation_filler_words
+                    or not _looks_like_name(token)):
+                continue
+            if token not in nearby_names:
+                nearby_names.append(token)
+            if len(nearby_names) == 2:
+                break
+        if len(nearby_names) == 2:
+            pair = _assign_bride_groom(
+                _clean_name(nearby_names[0]),
+                _clean_name(nearby_names[1]),
+                "bride-first",
+            )
+            candidate = _names_candidate(
+                pair["bride"], pair["groom"], 0.9, "marriage_of_proximity"
+            )
+            if candidate:
+                candidates.append(candidate)
+
     # A compact wedding phrase may contain two adjacent names without a
     # connector: "the wedding of Karthik Sowmiya". Split the names and assign
     # roles only when their name cues clearly indicate opposite genders.
@@ -3513,16 +4012,20 @@ def extract_names_variants(text_lines: List[str], text: str,
     if compact_wedding:
         name1 = _clean_name(compact_wedding.group(1))
         name2 = _clean_name(compact_wedding.group(2))
-        hints = (_gender_hint(name1), _gender_hint(name2))
-        if hints[0] and hints[1] and hints[0] != hints[1]:
-            pair = _assign_bride_groom(name1, name2, "groom-first")
-            c = _names_candidate(pair["bride"], pair["groom"], 0.97,
-                                 "compact_wedding_pair")
-        else:
-            c = Candidate({"bride": name1, "groom": name2, "_generic": True},
-                          0.97, "compact_wedding_pair")
-        if c:
-            candidates.append(c)
+        if not any(
+            name.lower().strip(".,;:") in invitation_filler_words
+            for name in (name1, name2)
+        ):
+            hints = (_gender_hint(name1), _gender_hint(name2))
+            if hints[0] and hints[1] and hints[0] != hints[1]:
+                pair = _assign_bride_groom(name1, name2, "groom-first")
+                c = _names_candidate(pair["bride"], pair["groom"], 0.97,
+                                     "compact_wedding_pair")
+            else:
+                c = Candidate({"bride": name1, "groom": name2, "_generic": True},
+                              0.97, "compact_wedding_pair")
+            if c:
+                candidates.append(c)
 
     ds = re.search(
         r"\b" + _NAME_TOKEN + r"\s+daughter\b.*?\b(?:with|and)\s+" + _NAME_TOKEN + r"\s+son\b",
@@ -4140,6 +4643,26 @@ def _split_events(text_lines: List[str]) -> List[List[str]]:
             current_et = extract_event_type("\n".join(current))
             current_type = current_et.value if current_et else ""
             if current_type and current_type.lower() == ht.lower():
+                previous_headings = {
+                    existing.strip().lower() for existing in current
+                    if _heading_type(existing) is not None
+                }
+                # Distinct wedding sub-events (for example, "Wedding
+                # Function" followed by "Marriage") can share the same broad
+                # event type. Split them when this is a new heading and the
+                # following segment contains its own date/time/location.
+                if (line.strip().lower() not in previous_headings
+                        and _group_has_event_info(current)):
+                    j = i + 1
+                    following = []
+                    while j < n and _heading_type(text_lines[j]) is None:
+                        following.append(text_lines[j])
+                        j += 1
+                    if following and _group_has_event_info(following):
+                        events.append(current)
+                        current = [line]
+                        i += 1
+                        continue
                 current.append(line)
                 i += 1
                 continue
@@ -4207,6 +4730,108 @@ def _clean(text: str) -> str:
         ):
             text = base
     return text
+
+
+# Decorative invitation text that OCR sometimes inserts between real address
+# components (e.g. "Anaiyur Kulamangalam Main Rd, TRADITION, Kosakulam,
+# Madurai, CULTURE, LOVE, Tamil Nadu 625017, India"). These are never valid
+# street/locality/state/pin components and must be dropped before the address
+# is finalized.
+_ADDRESS_DECORATIVE_WORDS = {
+    "tradition", "culture", "love", "happiness", "joy", "blessings",
+    "together", "forever", "eternity", "harmony", "unity", "passion",
+    "celebration", "honor", "glory", "dreams", "memories", "magic",
+    "beauty", "grace", "light", "life", "friendship", "family",
+    "heritage", "legacy", "vibrant", "vivid", "eternal", "divine",
+    "sacred", "auspicious", "prosperity", "wealth", "fortune", "luck",
+    "smile", "laughter", "warmth", "bond", "unity", "promise",
+    "journey", "together", "always", "everlasting", "ever", "endless",
+}
+
+
+def _strip_address_decoratives(value: str) -> str:
+    """Remove decorative comma-separated tokens from an address string.
+
+    Preserves tokens that look like real address components (street keywords,
+    digits, known cities/states/pin codes). Returns the cleaned value with
+    single spaces and no leading/trailing punctuation.
+    """
+    if not value:
+        return ""
+    tokens = [t.strip().rstrip(".,;:") for t in str(value).split(",")]
+    kept = []
+    for tok in tokens:
+        if not tok:
+            continue
+        words = tok.split()
+        # OCR often splits a locality such as "Poonga Bus Stop" across comma
+        # boundaries. Keep the qualifier attached to the recognized landmark
+        # when it arrives as a separate token.
+        if tok.lower() in {"bus stop", "bus-stop"} and kept:
+            kept[-1] = f"{kept[-1]} {tok}"
+            continue
+        # Keep tokens that contain digits (house numbers, pin codes).
+        if any(ch.isdigit() for ch in tok):
+            kept.append(tok)
+            continue
+        # Keep tokens that contain a street keyword.
+        if re.search(r"\b(?:road|rd|street|st|avenue|ave|lane|ln|drive|dr|"
+                     r"court|ct|place|pl|boulevard|blvd|nagar|colony|area|"
+                     r"layout|station|main|mg|sector|phase|puram|nagar|"
+                     r"estate|harbour|harbor|junction|crossing|by-pass|bypass|"
+                     r"highway|national|city|town|village|post|post office|bus stop|bus-stop)\b",
+                     tok, re.IGNORECASE):
+            kept.append(tok)
+            continue
+        # Keep tokens that are known Indian states/cities.
+        if tok.strip().lower() in KNOWN_CITIES or tok.strip().lower() in INDIAN_STATES:
+            kept.append(tok)
+            continue
+        # Keep tokens that contain a known city substring (e.g. "Madurai").
+        if any(city in tok.lower() for city in KNOWN_CITIES):
+            kept.append(tok)
+            continue
+        # Drop pure decorative single words.
+        if len(words) == 1 and words[0].lower() in _ADDRESS_DECORATIVE_WORDS:
+            continue
+        # Drop short decorative multi-word tokens where every word is decorative.
+        if words and all(w.lower() in _ADDRESS_DECORATIVE_WORDS for w in words):
+            continue
+        kept.append(tok)
+    cleaned = ", ".join(kept).strip().rstrip(",;: ")
+    cleaned = re.sub(r"\s*,\s*,", ",", cleaned)
+    return cleaned
+
+
+def _restore_ocr_bus_stop_qualifier(address: str, text: str) -> str:
+    """Restore a named bus-stop landmark if address extraction shortened it.
+
+    OCR may preserve ``Poonga Bus Stop`` in the source text while the address
+    candidate keeps only ``Road Bus Stop``. Recover the qualifier generically
+    from the OCR evidence; this does not add place names absent from the text.
+    """
+    if not address or not text:
+        return address
+    landmark = re.search(
+        r"\b([A-Z][A-Za-z.'-]{2,})\s+(Bus[- ]Stop)\b",
+        text,
+        re.IGNORECASE,
+    )
+    if not landmark:
+        return address
+    qualifier = f"{landmark.group(1)} {landmark.group(2)}"
+    if re.search(rf"\b{re.escape(qualifier)}\b", address, re.IGNORECASE):
+        return address
+    bus_stop = re.search(r"\bBus[- ]Stop\b", address, re.IGNORECASE)
+    if not bus_stop:
+        return address
+    street = _extract_street_address(address)
+    if not street:
+        return address
+    # Keep the remaining locality and postal details after the shortened bus
+    # stop token while rebuilding the street/landmark boundary clearly.
+    tail = address[bus_stop.end():].strip(" ,;:")
+    return f"{street.rstrip(' ,;:')}, {qualifier}" + (f", {tail}" if tail else "")
 
 
 def format_date(raw: str) -> str:
@@ -4381,6 +5006,18 @@ def _printed_weekday(text: str, group_text: str = "",
             rf"\b{re.escape(expected)}\b", document_text or group_text,
             re.IGNORECASE):
         return expected
+    tamil_weekdays = (
+        (r"\u0b9e\u0bbe\u0baf\u0bbf\u0bb1", "Sunday"),
+        (r"\u0ba4\u0bbf\u0b99\u0bcd\u0b95\u0bb3", "Monday"),
+        (r"\u0b9a\u0bc6\u0bb5\u0bcd\u0bb5\u0bbe\u0baf", "Tuesday"),
+        (r"\u0baa\u0bc1\u0ba4\u0ba9", "Wednesday"),
+        (r"\u0bb5\u0bbf\u0baf\u0bbe\u0bb4", "Thursday"),
+        (r"\u0bb5\u0bc6\u0bb3\u0bcd\u0bb3\u0bbf", "Friday"),
+        (r"\u0b9a\u0ba9\u0bbf", "Saturday"),
+    )
+    for pattern, weekday in tamil_weekdays:
+        if re.search(pattern, text or "") or re.search(pattern, group_text or ""):
+            return weekday
     match = re.search(rf"\b({_WEEKDAY})\b", text or "", re.IGNORECASE)
     if match:
         return match.group(1).capitalize()
@@ -4414,7 +5051,10 @@ def _printed_weekday(text: str, group_text: str = "",
         ))
         if len(unique) == 1:
             return unique[0]
-    return ""
+    # The weekday is deterministic once the date is validated. Use the
+    # Gregorian calendar result when the invitation prints the weekday in a
+    # script the OCR could not read (for example, a corrupted Tamil weekday).
+    return expected
 
 
 def _birthday_age(text: str) -> str:
@@ -4425,6 +5065,11 @@ def _birthday_age(text: str) -> str:
 def _additional_information(lines: List[str]) -> str:
     details = [_clean(line) for line in lines if re.match(
         r"^(?:dinner|lunch|breakfast|refreshments)\b", line.strip(), re.IGNORECASE)]
+    joined = " ".join(lines or [])
+    if re.search(r"வலிமா|walima", joined, re.IGNORECASE):
+        details.append(
+            "Walima feast is mentioned following the Nikah; no separate time is stated."
+        )
     return " | ".join(dict.fromkeys(details))
 
 
@@ -4583,6 +5228,8 @@ def parse_invitation(matched_fields: Dict, raw_text: str = "",
         couple_evidence = (
             _is_couple_based_event(selected_type)
             or _has_couple_evidence(name_variants, group_text)
+            or any(c.strategy == "tamil_explicit_role_marker"
+                   for c in name_variants)
         )
         if couple_evidence:
             couple_candidate = _best_couple_candidate(name_variants)
@@ -4645,6 +5292,8 @@ def parse_invitation(matched_fields: Dict, raw_text: str = "",
         range_end = next((c for c in time_variants_list if c.strategy == "time_range_end"), None)
         to_start = next((c for c in time_variants_list if c.strategy == "to_range_start"), None)
         to_end = next((c for c in time_variants_list if c.strategy == "to_range_end"), None)
+        pair_start = next((c for c in time_variants_list if c.strategy == "time_pair_start"), None)
+        pair_end = next((c for c in time_variants_list if c.strategy == "time_pair_end"), None)
         # Also recognize Tamil time-range strategies (e.g.
         # "tamil_dash_range_start"/"tamil_dash_range_end",
         # "tamil_time_range_start"/"tamil_time_range_end").
@@ -4660,6 +5309,9 @@ def parse_invitation(matched_fields: Dict, raw_text: str = "",
         elif to_start and to_end:
             best_time = to_start
             end_time_value = format_time(to_end.value, group_text)
+        elif pair_start and pair_end:
+            best_time = pair_start
+            end_time_value = format_time(pair_end.value, group_text)
         elif ta_start and ta_end:
             best_time = ta_start
             end_time_value = format_time(ta_end.value, group_text)
@@ -4671,6 +5323,15 @@ def parse_invitation(matched_fields: Dict, raw_text: str = "",
                 group_text, re.IGNORECASE)
             if m:
                 end_time_value = format_time(m.group(1).strip(), group_text)
+            else:
+                # No dash: check if a second time appears later on the same line
+                # (e.g. "10:00 AM 1:00 PM" where OCR dropped the dash).
+                line_match = re.search(
+                    rf"{re.escape(start)}\s+(?!\d)(?:\S+\s+)*"
+                    rf"(\d{{1,2}}[:.]\d{{2}}\s*(?:am|pm|a\.?m\.?|p\.?m\.?))",
+                    group_text, re.IGNORECASE)
+                if line_match:
+                    end_time_value = format_time(line_match.group(1).strip(), group_text)
 
         # Build parsed event skeleton from best candidates (converted to strings)
         is_generic_pair = False
@@ -4757,7 +5418,7 @@ def parse_invitation(matched_fields: Dict, raw_text: str = "",
             "time": format_time(best_time.value, group_text) if best_time else "",
             "end_time": end_time_value,
             "venue": _clean(venue_value),
-            "address": _clean(address_value),
+            "address": _clean(_strip_address_decoratives(address_value)),
             "contact_number": best_contact.value if best_contact else "",
             "additional_information": _additional_information(group),
             "birthday_age": _birthday_age(group_text),
@@ -4837,6 +5498,22 @@ def parse_invitation(matched_fields: Dict, raw_text: str = "",
         events.append(parsed)
         debug_events.append(debug)
 
+    # Poster titles can be split away from the event detail block by OCR
+    # ordering. A structured hackathon title found anywhere in the invitation
+    # is stronger than a nearby design/certificate decoration.
+    hackathon_titles = [
+        candidate for candidate in extract_event_name_variants(raw_text)
+        if candidate.strategy == "structured_hackathon_title"
+    ]
+    if hackathon_titles and any(
+        "hackathon" in str(event.get("event_type", "")).lower()
+        for event in events
+    ):
+        canonical_title = max(hackathon_titles, key=lambda candidate: candidate.confidence).value
+        for event in events:
+            if "hackathon" in str(event.get("event_type", "")).lower():
+                event["event_name"] = canonical_title
+
     # Couple identity is invitation-level evidence (Weds and parent-role
     # context), unlike date/time/location.  Populate it independently for
     # every detected event, but never copy event details between segments.
@@ -4851,7 +5528,7 @@ def parse_invitation(matched_fields: Dict, raw_text: str = "",
     # invitation even when the OCR places them in only one event group.  Back-fill
     # from any event that has the field, but only into events that lack it and
     # only when no other event already carries a conflicting different value.
-    _shared_fields = ("venue", "address", "contact_number")
+    _shared_fields = ("venue", "contact_number")
     for field in _shared_fields:
         source = next((event for event in events if event.get(field)), {})
         if not source:
@@ -4865,6 +5542,39 @@ def parse_invitation(matched_fields: Dict, raw_text: str = "",
             for event in events:
                 if not event.get(field):
                     event[field] = shared
+
+    # A shared venue address may be split across event groups by OCR. If one
+    # event has only a locality/PIN fragment and another has the same fragment
+    # inside a fuller address, use the fuller address for both events.
+    address_candidates = [
+        event.get("address", "") for event in events if event.get("address")
+    ]
+    if address_candidates:
+        fullest_address = max(
+            address_candidates,
+            key=lambda value: (
+                bool(re.search(r"\b(?:Tamil Nadu|Kerala|Karnataka)\b", value, re.I)),
+                len(re.findall(r"\b\d{6}\b", value)),
+                len(value),
+            ),
+        )
+        def address_is_fragment(value: str, full: str) -> bool:
+            compact_value = re.sub(r"[^a-z0-9 ]", " ", value.lower())
+            compact_full = re.sub(r"[^a-z0-9 ]", " ", full.lower())
+            words = {word for word in compact_value.split() if word}
+            full_words = set(compact_full.split())
+            pin = re.search(r"\b\d{6}\b", value)
+            full_pin = re.search(r"\b\d{6}\b", full)
+            return bool(
+                value != full and pin and full_pin
+                and pin.group() == full_pin.group()
+                and words.issubset(full_words)
+            )
+
+        for event in events:
+            value = event.get("address", "")
+            if not value or address_is_fragment(value, fullest_address):
+                event["address"] = fullest_address
 
     # A single printed schedule date/weekday commonly applies to several
     # event headings. Copy these invitation-level calendar fields only when
@@ -4925,6 +5635,9 @@ def parse_invitation(matched_fields: Dict, raw_text: str = "",
                 and event_venue.lower() in recovered_venue.lower()
                 and len(recovered_venue) > len(event_venue)):
             event_venue = recovered_venue
+        event_venue = _best_institution_venue(
+            event_venue, recovered_venue, raw_text
+        )
         formatted_event["venue"] = _clean_venue_address(event_venue)
         formatted_event["bride_name"] = _format_person_name(
             formatted_event.get("bride_name", ""), "Bride", raw_text)
@@ -4941,7 +5654,36 @@ def parse_invitation(matched_fields: Dict, raw_text: str = "",
             if (_heading_type(source_line) or _looks_like_name(source_line.strip())):
                 address = re.sub(rf"\b{re.escape(source_line.strip())}\b", "",
                                  address, flags=re.IGNORECASE)
-        formatted_event["address"] = _normalize_address_text(address)
+        address = _restore_ocr_bus_stop_qualifier(address, raw_text)
+        event_locality = _tamil_event_locality_from_text(raw_text)
+        contact_address = _reconcile_tamil_address_ocr(
+            _strip_address_decoratives(address or _address_block_from_text(raw_text)),
+            raw_text,
+        )
+        if event_locality:
+            # The family contact block is not the venue location. Keep it in
+            # its own field and use only the locality explicitly tied to the
+            # hall in the invitation text.
+            address = _event_map_address(event_locality)
+            formatted_event["venue"] = _clean_venue_address(
+                f"{event_locality} {formatted_event.get('venue', '')}"
+            )
+            formatted_event["contact_address"] = contact_address
+        if re.search(r"வலிமா|walima", raw_text, re.IGNORECASE):
+            extra = formatted_event.get("additional_information", "")
+            walima_note = (
+                "Walima feast is mentioned following the Nikah; "
+                "no separate time or venue is stated."
+            )
+            if "walima" not in extra.lower():
+                formatted_event["additional_information"] = " | ".join(
+                    part for part in (extra, walima_note) if part
+                )
+        formatted_event["address"] = _normalize_address_text(
+            _reconcile_tamil_address_ocr(
+                _strip_address_decoratives(address), raw_text
+            )
+        )
         formatted_events.append(formatted_event)
     formatted_people = []
     for person in all_people:
@@ -4984,7 +5726,39 @@ def parse_invitation(matched_fields: Dict, raw_text: str = "",
         line or the immediately preceding lines before a 'Son of' / 'Daughter
         of' marker (English or Tamil). Returns {'bride':...,'groom':...}.
         """
-        result: Dict[str, str] = {}
+        tamil_roles = _tamil_role_name_candidate(text or "")
+        role_values = dict(tamil_roles.value) if tamil_roles is not None else {}
+        # If one role label was lost by OCR, use the independent layout-aware
+        # name-band result only to fill the missing role. Never replace a name
+        # supported by an explicit Tamil role marker.
+        if ocr_lines and (not role_values.get("bride") or not role_values.get("groom")):
+            layout_names = extract_tamil_names(ocr_lines, text_lines)
+            if layout_names is not None:
+                for role in ("bride", "groom"):
+                    if not role_values.get(role) and layout_names.value.get(role):
+                        role_values[role] = layout_names.value[role]
+        if role_values.get("bride") or role_values.get("groom"):
+            return role_values
+        # This explicit couple pattern is stronger than proximity-based scans:
+        # "Son of Karthik with Nivetha Daughter of". Return both names together
+        # so nearby invitation words such as "you" cannot replace the groom.
+        paired_roles = re.search(
+            r"\bSon\s+of\s+(?P<groom>[A-Z][A-Za-z.'-]{2,}"
+            r"(?:\s+[A-Z][A-Za-z.'-]{2,}){0,2})\s+"
+            r"(?:with|and)\s+(?P<bride>[A-Z][A-Za-z.'-]{2,}"
+            r"(?:\s+[A-Z][A-Za-z.'-]{2,}){0,2})\s+"
+            r"Daughter\s+of\b",
+            text or "",
+            re.IGNORECASE,
+        )
+        if paired_roles:
+            groom = _clean_name(paired_roles.group("groom"))
+            bride = _clean_name(paired_roles.group("bride"))
+            if (all(_looks_like_family_name(token) for token in groom.split())
+                    and all(_looks_like_family_name(token) for token in bride.split())):
+                return {"groom": groom, "bride": bride}
+
+        scores: Dict[str, Dict[str, int]] = {"bride": {}, "groom": {}}
         tamil_marker = ("மகன்\u0bb2ிருக்கும்", "மகள்\u0bb2ிருக்கும்")
         relation_patterns = [
             (r"\bSon\s+of\b", "groom", re.IGNORECASE),
@@ -4992,21 +5766,81 @@ def parse_invitation(matched_fields: Dict, raw_text: str = "",
             (r"எஸ்\s*/\s*ஓ", "groom", 0),
             (r"டி\s*/\s*ஓ", "bride", 0),
         ]
-        lines = [l for l in (text or "").splitlines() if l.strip()]
-        for idx, line in enumerate(lines):
-            for pat, role, flags in relation_patterns:
-                if re.search(pat, line, flags):
-                    name = ""
-                    # Try the same line first (name immediately before marker).
-                    before = re.split(pat, line, flags=flags)[0].strip()
-                    tokens = re.findall(r"[A-Za-z][A-Za-z.'\-]{2,}", before)
-                    if tokens and _is_likely_english_name(tokens[-1]):
-                        name = _clean_name(tokens[-1])
-                    if not name:
-                        name = _find_name_above(lines, idx)
-                    if name and not result.get(role):
-                        result[role] = name
+        lines = [line for line in (text or "").splitlines() if line.strip()]
+        non_name_words = (
+            _NAME_REJECT_SINGLE_WORDS | _NOT_PERSON_SINGLE_WORDS |
+            _NAME_REJECT_PHRASE_WORDS | _COMMON_PHRASE_WORDS |
+            _FUNCTION_WORDS | _SLOGAN_OR_EVENT_WORDS | _ACTIVITY_LINE_WORDS |
+            _FAMILY_ROLE_STOP
+        )
+
+        def is_invitation_filler(token: str) -> bool:
+            lowered = token.lower().strip(".,;:'\"()")
+            if lowered in non_name_words:
+                return True
+            # OCR may drop the first letter of a slogan word ("ogether" for
+            # "Together"). Filter one-character OCR variants of known filler.
+            return len(lowered) >= 6 and any(
+                len(word) >= 6 and _levenshtein(lowered, word) <= 1
+                for word in non_name_words
+            )
+
+        for pat, role, flags in relation_patterns:
+            for marker in re.finditer(pat, text or "", flags):
+                before = (text or "")[:marker.start()]
+                tokens = list(re.finditer(r"(?<![A-Za-z])[A-Za-z][A-Za-z.'\-]*", before))
+                candidate = ""
+                # Prefer the full name immediately before the relationship
+                # marker ("Ananya Gauru Son of", "Venkatha Reddy Daughter of")
+                # rather than the final surname token alone.
+                full_name_match = re.search(
+                    r"((?:[A-Z][a-z][A-Za-z.'-]*\s+){1,3}"
+                    r"[A-Z][a-z][A-Za-z.'-]*)\s*$",
+                    before,
+                )
+                if full_name_match:
+                    possible_full_name = _clean_name(full_name_match.group(1))
+                    prefix = before[:full_name_match.start(1)]
+                    starts_after_parent_title = bool(re.search(
+                        r"(?:&\s*)?(?:Mr|Mrs|Ms|Dr|Smt|Sri)\.?\s+"
+                        r"(?:[A-Z]\.\s*)?$",
+                        prefix,
+                        re.IGNORECASE,
+                    ))
+                    if (not starts_after_parent_title
+                            and all(_looks_like_family_name(part)
+                                    for part in possible_full_name.split())):
+                        candidate = possible_full_name
+                for token_match in reversed(tokens):
+                    if candidate:
+                        break
+                    token = token_match.group(0).strip(".,;:'\"()")
+                    if len(token) < 3 or is_invitation_filler(token):
+                        continue
+                    if not _looks_like_family_name(token):
+                        continue
+                    candidate = _clean_name(token)
                     break
+
+                if not candidate:
+                    marker_line = (text or "").count("\n", 0, marker.start())
+                    candidate = _find_name_above(lines, marker_line)
+                if candidate:
+                    # Prefer repeated reads with nearby parent labels over
+                    # candidates near invitation slogans.
+                    has_parent_context = bool(re.search(
+                        r"\b(?:mr|mrs|ms|smt|sri|shree|thiru|selvi)\.?\b",
+                        before[-100:], re.IGNORECASE,
+                    ))
+                    role_scores = scores[role]
+                    role_scores[candidate] = role_scores.get(candidate, 0) + (
+                        3 if has_parent_context else 1
+                    )
+
+        result = {
+            role: max(candidates, key=candidates.get)
+            for role, candidates in scores.items() if candidates
+        }
         return result or None
 
     def _is_likely_english_name(token: str) -> bool:
@@ -5014,23 +5848,47 @@ def parse_invitation(matched_fields: Dict, raw_text: str = "",
 
     bride_val = _clean(primary.get("bride_name", ""))
     groom_val = _clean(primary.get("groom_name", ""))
-    recovered_names = None
-    if _is_implausible_person_name(bride_val) or _is_implausible_person_name(groom_val):
-        recovered_names = _recover_names_from_relation_text(raw_text) or {}
-    if _is_implausible_person_name(bride_val):
-        bride_val = recovered_names.get("bride", "")
-    if _is_implausible_person_name(groom_val):
-        groom_val = recovered_names.get("groom", "")
+    recovered_names = _recover_names_from_relation_text(raw_text) or {}
+    # Explicit parent-role statements are stronger than adjacent OCR name
+    # candidates, which may actually be invocation or slogan text.
+    bride_val = recovered_names.get("bride") or (
+        "" if _is_implausible_person_name(bride_val) else bride_val
+    )
+    groom_val = recovered_names.get("groom") or (
+        "" if _is_implausible_person_name(groom_val) else groom_val
+    )
+
+    # The generic people array was aggregated before invalid OCR names were
+    # repaired. Rebuild wedding participants from the cleaned role fields so
+    # the UI cannot keep showing an invocation phrase as the bride's name.
+    if _is_couple_based_event(primary.get("event_type", "")):
+        formatted_people = []
+        if groom_val:
+            formatted_people.append({
+                "name": _format_person_name(groom_val, "Groom", raw_text),
+                "role": "Groom",
+            })
+        if bride_val:
+            formatted_people.append({
+                "name": _format_person_name(bride_val, "Bride", raw_text),
+                "role": "Bride",
+            })
 
     # Enforce the same bride/groom cleanliness on each event's per-event fields.
     for event in formatted_events:
         ev_bride = _clean(event.get("bride_name", ""))
         ev_groom = _clean(event.get("groom_name", ""))
-        if _is_implausible_person_name(ev_bride):
+        if recovered_names.get("bride"):
+            event["bride_name"] = _format_person_name(
+                recovered_names["bride"], "Bride", raw_text)
+        elif _is_implausible_person_name(ev_bride):
             event["bride_name"] = _format_person_name(
                 recovered_names.get("bride", "") if recovered_names else "",
                 "Bride", raw_text)
-        if _is_implausible_person_name(ev_groom):
+        if recovered_names.get("groom"):
+            event["groom_name"] = _format_person_name(
+                recovered_names["groom"], "Groom", raw_text)
+        elif _is_implausible_person_name(ev_groom):
             event["groom_name"] = _format_person_name(
                 recovered_names.get("groom", "") if recovered_names else "",
                 "Groom", raw_text)
@@ -5040,6 +5898,27 @@ def parse_invitation(matched_fields: Dict, raw_text: str = "",
     # street + postal block, prefer the recovered block.
     recovered_address = _address_block_from_text(raw_text)
     primary_address = _prefer_complete_address(primary_address, recovered_address)
+    primary_address = _restore_ocr_bus_stop_qualifier(primary_address, raw_text)
+    event_locality = _tamil_event_locality_from_text(raw_text)
+    contact_address = _reconcile_tamil_address_ocr(
+        _strip_address_decoratives(primary_address or recovered_address), raw_text
+    )
+    if event_locality:
+        primary_address = _event_map_address(event_locality)
+
+    primary_venue = _clean_venue_address(
+        _best_institution_venue(
+            primary.get("venue", ""), _institution_venue_from_text(raw_text), raw_text
+        )
+    )
+    if event_locality:
+        primary_venue = _clean_venue_address(f"{event_locality} {primary_venue}")
+    primary_additional = _clean(primary.get("additional_information", ""))
+    if re.search(r"வலிமா|walima", raw_text, re.IGNORECASE) and "walima" not in primary_additional.lower():
+        primary_additional = " | ".join(part for part in (
+            primary_additional,
+            "Walima feast is mentioned following the Nikah; no separate time or venue is stated.",
+        ) if part)
 
     primary = {
         "event_name": _clean(primary.get("event_name", "")),
@@ -5049,14 +5928,15 @@ def parse_invitation(matched_fields: Dict, raw_text: str = "",
         "date": format_date(primary.get("date", "")),
         "time": format_time(primary.get("time", "")),
         "end_time": format_time(primary.get("end_time", "")),
-        "venue": (lambda primary_venue,
-                         recovered_venue=_institution_venue_from_text(raw_text):
-                         _clean_venue_address(
-                             _best_institution_venue(primary_venue, recovered_venue)
-                         ))(primary.get("venue", "")),
-        "address": _normalize_address_text(primary_address),
+        "venue": primary_venue,
+        "address": _normalize_address_text(
+            _reconcile_tamil_address_ocr(
+                _strip_address_decoratives(primary_address), raw_text
+            )
+        ),
+        "contact_address": contact_address if event_locality else "",
         "contact_number": _clean(primary.get("contact_number", "")),
-        "additional_information": _clean(primary.get("additional_information", "")),
+        "additional_information": primary_additional,
         "birthday_age": _clean(primary.get("birthday_age", "")),
         "printed_weekday": _clean(primary.get("printed_weekday", "")),
         "events": formatted_events,

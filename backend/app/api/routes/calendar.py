@@ -7,15 +7,16 @@ from datetime import datetime
 from typing import List, Optional
 
 import requests
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import RedirectResponse
 
 from ...config import settings
 from ...schemas.invitation import Event
+from ...auth import require_user
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(tags=["calendar"])
+router = APIRouter(tags=["calendar"], dependencies=[Depends(require_user)])
 
 GOOGLE_CALENDAR_BASE = "https://www.googleapis.com/calendar/v3"
 GOOGLE_OAUTH_BASE = "https://accounts.google.com/o/oauth2/v2/auth"
