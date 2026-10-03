@@ -10,7 +10,9 @@ import CameraScanScreen from './src/screens/CameraScanScreen';
 import ProcessingScreen from './src/screens/ProcessingScreen';
 import ResultScreen from './src/screens/ResultScreen';
 import AuthScreen from './src/screens/AuthScreen';
-import { getCurrentUser, logout } from './src/services/api';
+import SavedEventsScreen from './src/screens/SavedEventsScreen';
+import SavedEventScreen from './src/screens/SavedEventScreen';
+import { getCurrentUser, logout, registerSessionExpiredHandler } from './src/services/api';
 import colors from './src/theme/colors';
 
 const Stack = createNativeStackNavigator();
@@ -32,6 +34,8 @@ export default function App() {
       .finally(() => { if (mounted) setCheckingSession(false); });
     return () => { mounted = false; };
   }, []);
+
+  useEffect(() => registerSessionExpiredHandler(() => setUser(null)), []);
 
   const handleLogout = async () => {
     try { await logout(); } catch (error) { console.warn('[auth] Logout request failed:', error?.message); }
@@ -61,6 +65,8 @@ export default function App() {
             <Stack.Screen name="CameraScan" component={CameraScanScreen} />
             <Stack.Screen name="Processing" component={ProcessingScreen} />
             <Stack.Screen name="Result" component={ResultScreen} />
+            <Stack.Screen name="SavedEvents" component={SavedEventsScreen} />
+            <Stack.Screen name="SavedEvent" component={SavedEventScreen} />
           </> : <>
             <Stack.Screen name="Login">
               {(props) => <AuthScreen {...props} setUser={setUser} />}

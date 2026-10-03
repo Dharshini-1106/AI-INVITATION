@@ -39,6 +39,7 @@ def database():
             _db.users.create_index("email", unique=True, name="users_email_unique")
             _db.sessions.create_index("expires_at", expireAfterSeconds=0, name="sessions_expiry_ttl")
             _db.sessions.create_index("token_hash", unique=True, name="sessions_token_unique")
+            _db.events.create_index([("user_id", 1), ("updated_at", -1)], name="events_owner_updated")
             _indexes_ready = True
         return _db
     except PyMongoError as exc:
@@ -94,6 +95,14 @@ def current_user(session: str | None):
         raise HTTPException(503, "Account storage is temporarily unavailable.") from None
 
 
-def require_user(invitation_session: str | None = Cookie(default=None, alias="invitation_session")):
-    return current_user(invitation_session)
+def session_from_request(request: Request, invitation_session: str | None = None):
+    authorization = request.headers.get("authorization", "")
+    scheme, _, token = authorization.partition(" ")
+    if scheme.lower() == "bearer" and token.strip():
+        return token.strip()
+    return invitation_session or request.cookies.get("invitation_session")
+
+
+def require_user(request: Request, invitation_session: str | None = Cookie(default=None, alias="invitation_session")):
+    return current_user(session_from_request(request, invitation_session))
 

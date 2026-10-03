@@ -6,7 +6,7 @@ from fastapi import APIRouter, HTTPException, Request, Response
 from pydantic import BaseModel, EmailStr, Field, field_validator
 from pymongo.errors import DuplicateKeyError, PyMongoError
 
-from ...auth import check_rate_limit, create_session, current_user, database, normalize_email
+from ...auth import check_rate_limit, create_session, current_user, database, normalize_email, session_from_request
 from ...config import settings
 
 router = APIRouter()
@@ -50,7 +50,7 @@ class LoginInput(BaseModel):
 
 def set_session_cookie(response: Response, token: str):
     response.set_cookie(COOKIE_NAME, token, httponly=True, secure=settings.auth_cookie_secure,
-                        samesite="lax", max_age=60 * 60 * 24 * 7, path="/")
+                        samesite=settings.auth_cookie_samesite, max_age=60 * 60 * 24 * 7, path="/")
 
 
 @router.post("/signup", status_code=201)
@@ -85,13 +85,20 @@ def login(payload: LoginInput, request: Request, response: Response):
             valid = False
     if not valid:
         raise HTTPException(401, "Email or password is incorrect.")
-    set_session_cookie(response, create_session(user["_id"]))
-    return {"ok": True, "user": {"id": str(user["_id"]), "name": user["name"], "email": user["email"]}}
+    session_token = create_session(user["_id"])
+    set_session_cookie(response, session_token)
+    result = {"ok": True, "user": {"id": str(user["_id"]), "name": user["name"], "email": user["email"]}}
+    # Expo/React Native Axios does not provide a dependable shared cookie jar.
+    # Return the same opaque, revocable server session only to clients opting
+    # into bearer transport; browser callers continue to use the HttpOnly cookie.
+    if request.headers.get("x-session-transport", "").lower() == "bearer":
+        result["session_token"] = session_token
+    return result
 
 
 @router.post("/logout")
 def logout(request: Request, response: Response):
-    token = request.cookies.get(COOKIE_NAME)
+    token = session_from_request(request)
     storage_error = False
     if token:
         try:
@@ -99,7 +106,8 @@ def logout(request: Request, response: Response):
             database().sessions.delete_one({"token_hash": _token_hash(token)})
         except (PyMongoError, HTTPException):
             storage_error = True
-    response.delete_cookie(COOKIE_NAME, path="/", httponly=True, secure=settings.auth_cookie_secure, samesite="lax")
+    response.delete_cookie(COOKIE_NAME, path="/", httponly=True, secure=settings.auth_cookie_secure,
+                           samesite=settings.auth_cookie_samesite)
     if storage_error:
         raise HTTPException(503, "Account storage is temporarily unavailable.")
     return {"ok": True}
@@ -107,4 +115,4 @@ def logout(request: Request, response: Response):
 
 @router.get("/me")
 def me(request: Request):
-    return {"user": current_user(request.cookies.get(COOKIE_NAME))}
+    return {"user": current_user(session_from_request(request))}

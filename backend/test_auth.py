@@ -119,6 +119,7 @@ def test_login_creates_revocable_cookie_session_and_rejects_bad_credentials(monk
     response = Response()
     result = auth_routes.login(LoginInput(email="Alice@Example.com", password="GoodPassword42"), fake_request(), response)
     assert result["user"]["email"] == "alice@example.com"
+    assert "session_token" not in result  # Browser flow stays cookie based.
     assert "invitation_session=" in response.headers["set-cookie"]
     assert len(db.sessions.records) == 1
     with pytest.raises(HTTPException) as error:
@@ -127,6 +128,26 @@ def test_login_creates_revocable_cookie_session_and_rejects_bad_credentials(monk
     with pytest.raises(HTTPException) as error:
         auth_routes.login(LoginInput(email="unknown@example.com", password="GoodPassword42"), fake_request(), Response())
     assert error.value.status_code == 401
+
+
+def test_mobile_login_returns_the_same_revocable_session_as_bearer(monkeypatch):
+    db = FakeDatabase()
+    monkeypatch.setattr(auth_routes, "database", lambda: db)
+    monkeypatch.setattr(auth_helpers, "database", lambda: db)
+    monkeypatch.setattr(auth_helpers.settings, "jwt_secret", "test-secret-with-enough-randomness")
+    user_id = ObjectId()
+    db.users.records.append({"_id": user_id, "name": "Alice Example", "email": "alice@example.com",
+                             "password_hash": bcrypt.hashpw(b"GoodPassword42", bcrypt.gensalt()).decode(), "status": "active"})
+
+    request = Request({"type": "http", "method": "POST", "path": "/api/auth/login",
+                       "headers": [(b"x-session-transport", b"bearer")],
+                       "client": ("127.0.0.1", 1234), "server": ("test", 80), "scheme": "http",
+                       "query_string": b"", "root_path": "", "http_version": "1.1"})
+    result = auth_routes.login(LoginInput(email="alice@example.com", password="GoodPassword42"), request, Response())
+
+    token = result["session_token"]
+    assert token
+    assert auth_helpers.current_user(token)["id"] == str(user_id)
 
 
 def test_logout_invalidates_session_and_unauthenticated_user_is_rejected(monkeypatch):

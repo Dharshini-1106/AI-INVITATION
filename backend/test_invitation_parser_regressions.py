@@ -151,6 +151,67 @@ class InvitationParserRegressionTests(unittest.TestCase):
             "PASUVANTHANAI, Kovilpatti Main Rd, Kovilpatti, Tamil Nadu 628501",
         )
 
+    def test_missing_groom_ocr_does_not_use_invitation_pronoun(self):
+        raw = (
+            "Two Hearts One Life I Shree Ganeshaya Namah II A Beautiful Beginning\n"
+            "Together with your blessings we joyfully invite you to the WEDDING\n"
+            "Son of with Nivetha Daughter of\n"
+            "We request the pleasure of your presence and blessings on this auspicious occasion\n"
+            "Sunday Mahalakshmi Mahal AC 10.00 AM - 11.00 AM 15 November 2026\n"
+            "PASUVANTHANAI, Kovilpatti Main Rd, Kovilpatti, Tamil Nadu 628501\n"
+            "Your presence will make our celebration more special\n"
+            "With warm regards SHORCGSKA Togethler with your blessings we joyfully invite you to the SS S"
+        )
+        result = parse(raw)
+        self.assertEqual(result["bride_name"], "Nivetha")
+        self.assertEqual(result["groom_name"], "")
+        self.assertNotIn("you", [person["name"].lower() for person in result["people"]])
+        # The full pipeline can provide the false entity as a field hint too.
+        hinted = parse_invitation({"bride_name": "Nivetha", "groom_name": "you"}, raw)
+        self.assertEqual(hinted["groom_name"], "")
+
+    def test_weekday_attached_to_institution_venue_is_removed(self):
+        result = parse(
+            "NATIONAL COLLEGE ENGINEERING Graduates, (An Autonomous Institution) "
+            "Tomorrow 1 Changemakers Nallatinputhur, Kovilpatti, Tamil Nadu. pC "
+            "Knowledge Character Progress Estd : 1984 INVITES YOU CORDIALLY THE TO E "
+            "GraduationZ 4 R M O N Y A CELEBRATING CHIEVEMENTS G INSPIRINO OMORROW 0 "
+            "Monday National Engineering College 10.00 AM - 2.00 PM Nallatinputhur, "
+            "Kovilpatti, 30 November 2026 Tamil Nadu. Proud to be NECian! begins... "
+            "A new chapter Dream. Achieve. Inspire. LEARN GROW ENGINEERS FOR A BETTER "
+            "LEAD MAKE A DIFFERENCE Congratulations Gradutes! Excellence Ideas Innovation "
+            "Together for Society for a Brighter World for a Sustainable Future in Every "
+            "Endeavor Knowledge T Character Progress 984 CORDIALLY INVITES YOU TO THE - "
+            "fraduation 2 a . S CEREMON Y CELEBRATING ACHIEVEMENTS INSPIRING TOMORROW"
+        )
+        self.assertEqual(result["venue"], "National Engineering College")
+        self.assertEqual(result["date"], "November 30, 2026")
+        self.assertEqual(result["printed_weekday"], "Monday")
+        self.assertEqual(result["time"], "10:00 AM")
+        self.assertEqual(result["end_time"], "2:00 PM")
+
+    def test_recognized_slogan_prefix_is_removed_from_institution_venue(self):
+        raw = (
+            "KEC KONGU ENGINEERING COLLEGE TRANSFORM YOURSELF AND ENGINEERING "
+            "DEPARTMENT OF COMPUTER SCIENCE with in association (IIPC) CELL "
+            "PARTNERSHIP INDUSTRY INSTITUTE ORGANIZES FIGMA FOR UI/UX DESIGN: "
+            "P H FROM BASICS TO PROTOTYPING wireframing, Learn fundamentals, "
+            "Figma principles, UI/UX components, design Gain d prototyping. "
+            "practical layouts, skills to into engaging digital experiences. "
+            "interactive create prototypes, ideas I transform KONGU ENGINEERING "
+            "COLLEGE, 9:00 AM to 4:00 PM 2026 23 OCTOBER Perundurai Railway "
+            "Station Road, Friday Full-Day Thoppupalayam, , Perundurai, Session "
+            "Erode - 638 060, Tamil Nadu, India. TRANSFORM YOURSELF OF TMENT "
+            "COMPUTER SCIENCE AND ENGINEE in association with DUSTRY INSTITUTE "
+            "PARTNERSHIP CELL (UIPC"
+        )
+        result = parse(raw)
+        self.assertEqual(result["venue"], "KONGU ENGINEERING COLLEGE")
+        self.assertEqual(result["date"], "October 23, 2026")
+        self.assertEqual(result["printed_weekday"], "Friday")
+        self.assertEqual(result["time"], "9:00 AM")
+        self.assertEqual(result["end_time"], "4:00 PM")
+
     def test_ocr_time_error_oo_to_00(self):
         # Letter O/o in time should be corrected to digit 0
         result = parse(

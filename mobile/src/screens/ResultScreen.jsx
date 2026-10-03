@@ -3,10 +3,11 @@ import { SafeAreaView, ScrollView, StyleSheet, Text, TextInput, TouchableOpacity
 import colors from '../theme/colors';
 import { createConfirmedCalendarEvents, validateCalendarEvents } from '../services/calendarService';
 import TravelPlanModal from '../components/TravelPlanModal';
+import { createEvent, saveEventSchedule, updateEvent } from '../services/api';
 
 const EVENT_FIELDS = [
   ['event_name', 'Event Name'], ['event_type', 'Event Type'], ['date', 'Date'],
-  ['printed_weekday', 'Day'], ['time', 'Time'], ['end_time', 'End Time'], ['venue', 'Venue'],
+  ['day', 'Day'], ['time', 'Time'], ['end_time', 'End Time'], ['venue', 'Venue'],
   ['address', 'Address'], ['contact_number', 'Contact'],
 ];
 const display = (value) => value === undefined || value === null || value === '' ? 'Not available' : String(value);
@@ -22,8 +23,38 @@ export default function ResultScreen({ navigation, route }) {
     (character >= 'A' && character <= 'Z')
     || (character >= 'a' && character <= 'z')
   )).length;
+  const engineFromNotes = (result?.processing_notes || [])
+    .find((note) => /^OCR engine\(s\):/i.test(note))
+    ?.replace(/^OCR engine\(s\):\s*/i, '')
+    .split(',')
+    .map((engine) => engine.trim())
+    .filter((engine) => /paddleocr|rapidocr/i.test(engine))
+    .join(', ');
+  const engineFromResult = String(result?.ocr_engine || '')
+    .split(',')
+    .map((engine) => engine.trim())
+    .filter((engine) => /paddleocr|rapidocr/i.test(engine))
+    .join(', ');
+  const ocrEngine = engineFromResult || engineFromNotes || result?.ocr_engine;
+  const lineConfidences = (result?.ocr_layout || [])
+    .map((line) => Number(line.confidence))
+    .filter((confidence) => Number.isFinite(confidence) && confidence > 0);
+  const derivedOcrConfidence = lineConfidences.length
+    ? lineConfidences.reduce((total, confidence) => total + confidence, 0) / lineConfidences.length
+    : null;
+  const ocrConfidence = result?.ocr_confidence ?? derivedOcrConfidence;
+  const resultPeople = (result?.people || []).filter(
+    (person) => person && (person.name || person.role),
+  );
+  const fallbackPeople = resultPeople.length ? resultPeople : [
+    result?.bride_name && { name: result.bride_name, role: 'Bride' },
+    result?.groom_name && { name: result.groom_name, role: 'Groom' },
+  ].filter(Boolean);
   const initialEvents = useMemo(
-    () => result?.events?.length ? result.events : [result || {}],
+    () => (result?.events?.length ? result.events : [result || {}]).map((event) => ({
+      ...event,
+      people: event.people?.length ? event.people : fallbackPeople,
+    })),
     [
       result?.events,
       result?.event_name,
@@ -37,11 +68,13 @@ export default function ResultScreen({ navigation, route }) {
       result?.address,
       result?.contact_number,
       result?.timezone,
+      result?.people,
+      fallbackPeople,
     ],
   );
   const [events, setEvents] = useState(() => initialEvents.map((event) => ({ ...event })));
   const [people, setPeople] = useState(() => {
-    const extracted = (result?.people || []).filter((person) => person && (person.name || person.role));
+    const extracted = resultPeople;
     if (extracted.length) return extracted.map((person) => ({ ...person }));
     return [
       result?.bride_name && { name: result.bride_name, role: 'Bride' },
@@ -52,6 +85,8 @@ export default function ResultScreen({ navigation, route }) {
   const [scheduling, setScheduling] = useState(false);
   const [message, setMessage] = useState('');
   const [scheduled, setScheduled] = useState(false);
+  const [eventIds, setEventIds] = useState(() => initialEvents.map((event) => event.id || null));
+  const [saving, setSaving] = useState(false);
   const update = (index, field, value) => setEvents((current) => current.map((event, i) => i === index ? { ...event, [field]: value } : event));
   const updatePerson = (index, value) => {
     const person = people[index];
@@ -59,7 +94,37 @@ export default function ResultScreen({ navigation, route }) {
     const field = person?.role?.toLowerCase() === 'bride'
       ? 'bride_name'
       : person?.role?.toLowerCase() === 'groom' ? 'groom_name' : null;
-    if (field) setEvents((current) => current.map((event) => ({ ...event, [field]: value })));
+    setEvents((current) => current.map((event) => ({
+      ...event,
+      ...(field ? { [field]: value } : {}),
+      people: (event.people || []).map((entry, personIndex) => (
+        personIndex === index ? { ...entry, name: value } : entry
+      )),
+    })));
+  };
+
+  const persistEvent = async (index) => {
+    const saved = eventIds[index]
+      ? await updateEvent(eventIds[index], events[index])
+      : await createEvent(events[index]);
+    setEventIds((current) => current.map((id, i) => i === index ? saved.id : id));
+    return saved.id;
+  };
+
+  const saveEvents = async () => {
+    setSaving(true);
+    setMessage('');
+    try {
+      for (let index = 0; index < events.length; index += 1) await persistEvent(index);
+      setEditing(false);
+      setMessage('Event saved to My Events.');
+      return true;
+    } catch (error) {
+      setMessage(error?.response?.data?.detail || error?.message || 'Unable to save this event. Check your connection and try again.');
+      return false;
+    } finally {
+      setSaving(false);
+    }
   };
 
   const schedule = async () => {
@@ -72,11 +137,24 @@ export default function ResultScreen({ navigation, route }) {
     setScheduling(true);
     setMessage('');
     try {
-      const outcome = await createConfirmedCalendarEvents(events);
+      const savedIds = [];
+      for (let index = 0; index < events.length; index += 1) savedIds.push(await persistEvent(index));
+      const existingCalendarIds = await Promise.all(savedIds.map(async (id) => {
+        const eventIndex = savedIds.indexOf(id);
+        return events[eventIndex]?.schedule?.calendar_event_ids?.[0] || null;
+      }));
+      const outcome = await createConfirmedCalendarEvents(events, existingCalendarIds);
       if (!outcome.ok) {
         setMessage(outcome.reason);
         return;
       }
+      await Promise.all(savedIds.map((id, index) => saveEventSchedule(id, {
+        status: 'scheduled',
+        scheduled_at: new Date().toISOString(),
+        calendar_event_ids: outcome.eventIds?.[index] ? [outcome.eventIds[index]] : [],
+        event_date: events[index].date || '',
+        event_time: events[index].time || '',
+      })));
       setScheduled(true);
       setMessage('Event added successfully.');
     } catch (error) {
@@ -134,11 +212,15 @@ export default function ResultScreen({ navigation, route }) {
                   placeholderTextColor={colors.textMuted}
                 />
               ) : (
-                <Text style={styles.value}>{display(event[field])}</Text>
+                <Text style={styles.value}>{display(field === 'day' ? (event.day || event.printed_weekday) : event[field])}</Text>
               )}
             </View>
           ))}
-          <TravelPlanModal event={event} />
+          <TravelPlanModal
+            event={event}
+            eventId={eventIds[eventIndex]}
+            onEnsureSaved={() => persistEvent(eventIndex)}
+          />
         </View>
       );
     })}
@@ -146,13 +228,13 @@ export default function ResultScreen({ navigation, route }) {
     <View style={styles.card}>
       <Text style={styles.eventTitle}>OCR details</Text>
       <Text style={styles.label}>Language</Text><Text style={styles.value}>{display(result.language)}</Text>
-      <Text style={styles.label}>Engine / confidence</Text><Text style={styles.value}>{display(result.ocr_engine)} / {result.ocr_confidence == null ? 'Not available' : `${Math.round(result.ocr_confidence * 100)}%`}</Text>
+      <Text style={styles.label}>Engine / confidence</Text><Text style={styles.value}>{display(ocrEngine)} / {ocrConfidence == null ? 'Not available' : `${Math.round(ocrConfidence * 100)}%`}</Text>
       <Text style={styles.label}>Tamil / English characters</Text><Text style={styles.value}>{result.tamil_character_count || derivedTamilCount} / {result.english_character_count || derivedEnglishCount}</Text>
       {!!result.raw_text && <><Text style={styles.label}>Raw extracted text</Text><Text selectable style={styles.rawText}>{result.raw_text}</Text></>}
       {(result.processing_notes || []).map((note, index) => <Text key={`${note}-${index}`} style={styles.note}>• {note}</Text>)}
     </View>
     {!!message && <Text style={scheduled ? styles.success : styles.error}>{message}</Text>}
-    {!scheduled && (editing ? <TouchableOpacity style={styles.primary} onPress={() => { setEditing(false); setMessage(''); }}><Text style={styles.primaryText}>Save Edits and Review</Text></TouchableOpacity> : <><TouchableOpacity style={styles.primary} disabled={scheduling} onPress={schedule}><Text style={styles.primaryText}>{scheduling ? 'Scheduling...' : 'Save and Schedule'}</Text></TouchableOpacity><TouchableOpacity style={styles.secondary} onPress={() => setEditing(true)}><Text style={styles.secondaryText}>Edit Details</Text></TouchableOpacity></>)}
+    {!scheduled && (editing ? <TouchableOpacity style={styles.primary} disabled={saving} onPress={saveEvents}><Text style={styles.primaryText}>{saving ? 'Saving...' : 'Save Edits'}</Text></TouchableOpacity> : <><TouchableOpacity style={styles.primary} disabled={scheduling || saving} onPress={saveEvents}><Text style={styles.primaryText}>{saving ? 'Saving...' : 'Save Event'}</Text></TouchableOpacity><TouchableOpacity style={styles.secondary} disabled={scheduling || saving} onPress={schedule}><Text style={styles.secondaryText}>{scheduling ? 'Scheduling...' : 'Save and Schedule'}</Text></TouchableOpacity><TouchableOpacity style={styles.secondary} onPress={() => setEditing(true)}><Text style={styles.secondaryText}>Edit Details</Text></TouchableOpacity></>)}
     <TouchableOpacity style={styles.home} onPress={() => navigation.replace('Home')}><Text style={styles.secondaryText}>Analyze Another Invitation</Text></TouchableOpacity>
   </ScrollView></SafeAreaView>;
 }

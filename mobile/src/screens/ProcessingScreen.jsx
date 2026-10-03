@@ -120,7 +120,11 @@ export default function ProcessingScreen({ navigation, route }) {
             'Analysis timed out. The invitation is taking longer than expected ' +
             'to process. Please try again with a clearer image or wait a bit longer.'
           );
-        } else if (!e.response || e.code === 'ERR_NETWORK' || e.code === 'ECONNREFUSED') {
+        } else if (
+          e.code === 'ERR_NETWORK' ||
+          e.code === 'ECONNREFUSED' ||
+          e.code === 'ENOTFOUND'
+        ) {
           const backendAddr = API_CONFIG.baseURL.replace(/\/api\/v1$/, '');
           setError(
             `Cannot reach the backend at ${backendAddr}. ` +
@@ -133,8 +137,8 @@ export default function ProcessingScreen({ navigation, route }) {
           const serverDetail = e.response?.data?.detail || e.message || '';
           setError(
             serverDetail
-              ? `Server error: ${serverDetail} (${e.response.status})`
-              : `Request failed (${e.response.status}). Check the backend and retry.`
+              ? `Analysis failed: ${serverDetail}${e.response?.status ? ` (${e.response.status})` : ''}`
+              : 'Could not process the analysis response. Please try again.'
           );
         }
       }

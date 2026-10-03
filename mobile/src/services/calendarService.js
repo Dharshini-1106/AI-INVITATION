@@ -26,6 +26,10 @@ function createDate(year, month, day) {
 export function parseDate(value) {
   if (!usable(value)) return null;
   const input = String(value).trim();
+  const range = input.match(/^(\d{1,2})\s*[-–—]\s*\d{1,2}\s+([a-z]+)\s+(\d{4})$/i);
+  if (range && MONTHS[range[2].toLowerCase()] !== undefined) {
+    return createDate(Number(range[3]), MONTHS[range[2].toLowerCase()], Number(range[1]));
+  }
   const dayFirst = input.match(/^(\d{1,2})(?:st|nd|rd|th)?\s+([a-z]+)\s+(\d{4})$/i);
   if (dayFirst && MONTHS[dayFirst[2].toLowerCase()] !== undefined) return createDate(Number(dayFirst[3]), MONTHS[dayFirst[2].toLowerCase()], Number(dayFirst[1]));
   const monthFirst = input.match(/^([a-z]+)\s+(\d{1,2})(?:st|nd|rd|th)?\s*,?\s+(\d{4})$/i);
@@ -58,7 +62,7 @@ export function parseTime(value) {
 }
 
 export function eventDate(event) {
-  const date = parseDate(event.date);
+  const date = parseDate(event.start_date || event.date);
   if (!date) return null;
   const time = usable(event.time) && parseTime(event.time);
   if (time) date.setHours(time.hours, time.minutes, 0, 0);
@@ -66,6 +70,11 @@ export function eventDate(event) {
 }
 
 function eventEndDate(event, startDate) {
+  const inclusiveEnd = parseDate(event.end_date);
+  if (inclusiveEnd && !parseTime(event.time) && !parseTime(event.end_time)) {
+    inclusiveEnd.setDate(inclusiveEnd.getDate() + 1);
+    return inclusiveEnd;
+  }
   const end = new Date(startDate.getTime() + 60 * 60 * 1000);
   const time = parseTime(event.end_time);
   if (!time) return end;
@@ -74,11 +83,29 @@ function eventEndDate(event, startDate) {
   return end;
 }
 
+function calendarTitle(event) {
+  const title = usable(event.event_name) ? event.event_name
+    : (event.event_type || 'Invitation event');
+  if (!/birthday/i.test(`${event.event_type || ''} ${title}`)) return title;
+
+  const birthdayPerson = (event.people || []).find((person) => (
+    person?.name && !/^(bride|groom)$/i.test(person.role || '')
+  ))?.name;
+  if (!birthdayPerson || title.toLowerCase().includes(birthdayPerson.toLowerCase())) return title;
+  return `${title} — ${birthdayPerson}`;
+}
+
 function calendarDescription(event) {
+  const people = (event.people || [])
+    .filter((person) => person?.name)
+    .filter((person) => person.name !== event.bride_name && person.name !== event.groom_name)
+    .map((person) => person.role && !/^person$/i.test(person.role)
+      ? `${person.role}: ${person.name}` : person.name);
   return [
     usable(event.event_type) && `Event type: ${event.event_type}`,
     usable(event.bride_name) && `Bride: ${event.bride_name}`,
     usable(event.groom_name) && `Groom: ${event.groom_name}`,
+    people.length > 0 && `People: ${people.join(', ')}`,
     usable(event.contact_number) && `Contact: ${event.contact_number}`,
   ].filter(Boolean).join('\n');
 }
@@ -104,7 +131,7 @@ export function validateCalendarEvents(events) {
   };
 }
 
-async function createViaExpoCalendar(events) {
+async function createViaExpoCalendar(events, existingEventIds = []) {
   let permission = await Calendar.getCalendarPermissionsAsync();
   if (permission.status !== 'granted') permission = await Calendar.requestCalendarPermissionsAsync();
   if (permission.status !== 'granted') return { ok: false, reason: 'Calendar permission is required to schedule this event.' };
@@ -139,7 +166,8 @@ async function createViaExpoCalendar(events) {
   console.log('[calendarService] Selected calendar ID:', calendar.id);
 
   let created = 0;
-  for (const event of events) {
+  const eventIds = [];
+  for (const [index, event] of events.entries()) {
     const startDate = eventDate(event);
     const alarms = reminderAlarms(startDate);
     REMINDER_OFFSETS.forEach(({ label, relativeOffset }, index) => {
@@ -152,36 +180,42 @@ async function createViaExpoCalendar(events) {
     console.log('[calendarService] Reminder alarms:', JSON.stringify(alarms));
 
     const eventDetails = {
-      title: usable(event.event_name) ? event.event_name : (event.event_type || 'Invitation event'),
+      title: calendarTitle(event),
       startDate,
       endDate: eventEndDate(event, startDate),
+      ...(!parseTime(event.time) && !parseTime(event.end_time) && event.end_date
+        ? { allDay: true }
+        : {}),
       location: [event.venue, event.address].filter(usable).join(', ') || undefined,
       notes: calendarDescription(event) || undefined,
       ...(alarms.length ? { alarms } : {}),
     };
 
-    let eventId;
+    let eventId = existingEventIds[index];
     try {
-      eventId = await Calendar.createEventAsync(calendar.id, eventDetails);
+      if (eventId) await Calendar.updateEventAsync(eventId, eventDetails);
+      else eventId = await Calendar.createEventAsync(calendar.id, eventDetails);
     } catch (error) {
       // Calendar providers can reject alarm settings independently. Preserve
       // the primary event by retrying once with the unchanged event details.
       console.log('[calendarService] Reminder warning:', error?.message || String(error));
       const { alarms: ignoredAlarms, ...eventDetailsWithoutAlarms } = eventDetails;
-      eventId = await Calendar.createEventAsync(calendar.id, eventDetailsWithoutAlarms);
+      if (existingEventIds[index]) await Calendar.updateEventAsync(existingEventIds[index], eventDetailsWithoutAlarms);
+      else eventId = await Calendar.createEventAsync(calendar.id, eventDetailsWithoutAlarms);
     }
     if (!eventId) throw new Error('The phone calendar did not return an event ID.');
     console.log('[calendarService] Created event ID:', eventId);
-    created += 1;
+    eventIds.push(eventId);
+    if (!existingEventIds[index]) created += 1;
   }
-  return { ok: true, created };
+  return { ok: true, created, eventIds };
 }
 
-export async function createConfirmedCalendarEvents(events) {
+export async function createConfirmedCalendarEvents(events, existingEventIds = []) {
   const validation = validateCalendarEvents(events);
   if (!validation.valid) return { ok: false, reason: validation.reason };
   try {
-    return await createViaExpoCalendar(events);
+    return await createViaExpoCalendar(events, existingEventIds);
   } catch (error) {
     return { ok: false, reason: error?.message || 'Unable to create the phone calendar event.' };
   }

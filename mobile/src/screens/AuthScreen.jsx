@@ -38,6 +38,7 @@ function apiError(error) {
   const detail = error?.response?.data?.detail;
   if (typeof detail === 'string') return detail;
   if (Array.isArray(detail)) return detail.map((item) => item.msg).join(' ');
+  if (error?.message?.includes('did not return a session')) return error.message;
   return 'Could not connect to the account service. Check the backend and try again.';
 }
 

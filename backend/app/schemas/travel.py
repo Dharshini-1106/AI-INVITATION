@@ -23,6 +23,8 @@ class TravelPlanRequest(BaseModel):
     # preserved for display; only the routing waypoint is replaced.
     destination_venue: str = ""
     destination_address: str = ""
+    destination_place_id: str = ""
+    confirm_unverified_destination: bool = False
     event_date: str = ""
     event_start_time: str = ""
     event_timezone: str = ""
@@ -46,6 +48,9 @@ class TravelPlanResponse(BaseModel):
     destination: str
     destination_place_id: str = ""
     destination_place_name: str = ""
+    destination_resolved_address: str = ""
+    destination_latitude: float | None = None
+    destination_longitude: float | None = None
     origin: str
     timezone: str = ""
     google_maps_url: str
@@ -53,3 +58,5 @@ class TravelPlanResponse(BaseModel):
     message: str = ""
     schedule_message: str = ""
     traffic_aware: bool = False
+    travel_duration_label: str = ""
+    route_note: str = ""

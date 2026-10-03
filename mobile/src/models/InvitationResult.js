@@ -6,15 +6,19 @@ export class InvitationEvent {
     bride_name = '',
     groom_name = '',
     date = '',
+    start_date = '',
+    end_date = '',
+    day = '',
     time = '',
     end_time = '',
+    printed_weekday = '',
     venue = '',
     address = '',
+    contact_address = '',
     contact_number = '',
-    timezone = '',
     additional_information = '',
     birthday_age = '',
-    printed_weekday = '',
+    timezone = '',
     confidence = 0,
   } = {}) {
     this.event_name = event_name;
@@ -22,10 +26,14 @@ export class InvitationEvent {
     this.bride_name = bride_name;
     this.groom_name = groom_name;
     this.date = date;
+    this.start_date = start_date;
+    this.end_date = end_date;
+    this.day = day;
     this.time = time;
     this.end_time = end_time;
     this.venue = venue;
     this.address = address;
+    this.contact_address = contact_address;
     this.contact_number = contact_number;
     this.timezone = timezone;
     this.additional_information = additional_information;
@@ -53,11 +61,18 @@ export class InvitationResult {
     bride_name = '',
     groom_name = '',
     date = '',
+    start_date = '',
+    end_date = '',
+    day = '',
     time = '',
     end_time = '',
+    printed_weekday = '',
     venue = '',
     address = '',
+    contact_address = '',
     contact_number = '',
+    additional_information = '',
+    birthday_age = '',
     timezone = '',
     language = '',
     confidence_score = 0,
@@ -65,6 +80,12 @@ export class InvitationResult {
     events = [],
     quality = {},
     raw_text = '',
+    ocr_layout = [],
+    ocr_engine = '',
+    ocr_confidence = null,
+    tamil_character_count = 0,
+    english_character_count = 0,
+    fallback_used = false,
     processing_notes = [],
   } = {}) {
     this.invitation_mode = invitation_mode;
@@ -74,11 +95,18 @@ export class InvitationResult {
     this.bride_name = bride_name;
     this.groom_name = groom_name;
     this.date = date;
+    this.start_date = start_date;
+    this.end_date = end_date;
+    this.day = day;
     this.time = time;
     this.end_time = end_time;
+    this.printed_weekday = printed_weekday;
     this.venue = venue;
     this.address = address;
+    this.contact_address = contact_address;
     this.contact_number = contact_number;
+    this.additional_information = additional_information;
+    this.birthday_age = birthday_age;
     this.timezone = timezone;
     this.language = language;
     this.confidence_score = confidence_score;
@@ -86,6 +114,12 @@ export class InvitationResult {
     this.events = (events || []).map((e) => new InvitationEvent(e));
     this.quality = quality || {};
     this.raw_text = raw_text;
+    this.ocr_layout = ocr_layout || [];
+    this.ocr_engine = ocr_engine;
+    this.ocr_confidence = ocr_confidence;
+    this.tamil_character_count = tamil_character_count;
+    this.english_character_count = english_character_count;
+    this.fallback_used = fallback_used;
     this.processing_notes = processing_notes || [];
   }
 
@@ -99,11 +133,18 @@ export class InvitationResult {
       bride_name: this.bride_name,
       groom_name: this.groom_name,
       date: this.date,
+      start_date: this.start_date,
+      end_date: this.end_date,
+      day: this.day,
       time: this.time,
       end_time: this.end_time,
+      printed_weekday: this.printed_weekday,
       venue: this.venue,
       address: this.address,
+      contact_address: this.contact_address,
       contact_number: this.contact_number,
+      additional_information: this.additional_information,
+      birthday_age: this.birthday_age,
       timezone: this.timezone,
       confidence: this.confidence_score,
     });

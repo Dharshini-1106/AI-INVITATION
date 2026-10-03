@@ -12,7 +12,7 @@ import {
 } from 'react-native';
 import * as Location from 'expo-location';
 import colors from '../theme/colors';
-import { getResolvedBaseUrl, planTravel } from '../services/api';
+import { getResolvedBaseUrl, planTravel, saveTravelPlan } from '../services/api';
 import { scheduleTravelNotifications } from '../services/travelNotificationService';
 
 const TRAVEL_MODES = [
@@ -92,7 +92,7 @@ function getErrorMessage(error) {
   return error?.message || 'Travel time is currently unavailable.';
 }
 
-export default function TravelPlanModal({ event }) {
+export default function TravelPlanModal({ event, eventId, onEnsureSaved, savedPlan }) {
   const initialDestination = normalizeDestination(
     [event?.venue, event?.address].filter(Boolean).join(', '),
   );
@@ -114,9 +114,12 @@ export default function TravelPlanModal({ event }) {
   const [customPreparation, setCustomPreparation] = useState(60);
   const [arrivalBufferMode, setArrivalBufferMode] = useState('15');
   const [customArrivalBuffer, setCustomArrivalBuffer] = useState(15);
-  const [plan, setPlan] = useState(null);
+  const [plan, setPlan] = useState(savedPlan || null);
   const [error, setError] = useState('');
-  const [mapsUrl, setMapsUrl] = useState('');
+  const [mapsUrl, setMapsUrl] = useState(savedPlan?.google_maps_url || '');
+  const [destinationCandidates, setDestinationCandidates] = useState([]);
+  const [selectedPlaceId, setSelectedPlaceId] = useState('');
+  const [confirmTypedDestination, setConfirmTypedDestination] = useState(false);
   const [loading, setLoading] = useState(false);
   const [locationLoading, setLocationLoading] = useState(false);
 
@@ -125,8 +128,10 @@ export default function TravelPlanModal({ event }) {
       previousEventKey.current = eventKey;
       setOrigin(null);
       setManualOrigin('');
+      setPlan(savedPlan || null);
+      setMapsUrl(savedPlan?.google_maps_url || '');
     }
-  }, [eventKey]);
+  }, [eventKey, savedPlan]);
 
   useEffect(() => {
     if (open) {
@@ -139,9 +144,10 @@ export default function TravelPlanModal({ event }) {
       setCustomArrivalBuffer(15);
       setOrigin(null);
       setManualOrigin('');
-      setPlan(null);
       setError('');
-      setMapsUrl('');
+      setDestinationCandidates([]);
+      setSelectedPlaceId('');
+      setConfirmTypedDestination(false);
     }
   }, [open, eventKey]);
 
@@ -263,16 +269,23 @@ export default function TravelPlanModal({ event }) {
     try {
       const destAddress = selectedDestination || initialDestination;
       console.log('[travel] FINAL destination:', destAddress);
-      const result = await planTravel({
+      const request = {
         origin: selectedOrigin,
         destination: { type: 'event', address: destAddress },
+        destination_venue: destAddress === initialDestination ? (event?.venue || '') : destAddress,
+        destination_address: destAddress === initialDestination ? (event?.address || '') : '',
+        destination_place_id: selectedPlaceId,
+        confirm_unverified_destination: confirmTypedDestination,
         event_date: event?.date || '',
         event_start_time: event?.time || '',
         event_timezone: event?.timezone || DEFAULT_TIMEZONE,
         travel_mode: travelMode,
         preparation_minutes: preparationMinutes,
         arrival_buffer_minutes: bufferMinutes,
-      });
+      };
+      const savedEvent = eventId || (onEnsureSaved ? await onEnsureSaved() : null);
+      const result = await planTravel(request);
+      if (savedEvent) await saveTravelPlan(savedEvent, result, request);
       setPlan(result);
       setMapsUrl(result?.google_maps_url || '');
       scheduleTravelNotifications({ plan: result, event, destination: destAddress }).catch((notificationError) => {
@@ -287,6 +300,7 @@ export default function TravelPlanModal({ event }) {
       });
       setMapsUrl(typeof detail === 'object' ? detail?.google_maps_url || '' : '');
       setError(getErrorMessage(requestError));
+      setDestinationCandidates(detail?.destination_candidates || []);
     } finally {
       setLoading(false);
     }
@@ -313,7 +327,7 @@ export default function TravelPlanModal({ event }) {
   return (
     <>
       <TouchableOpacity style={styles.travelButton} onPress={() => setOpen(true)}>
-        <Text style={styles.travelButtonText}>Plan My Travel</Text>
+        <Text style={styles.travelButtonText}>{savedPlan ? 'View Travel Plan' : 'Plan My Travel'}</Text>
       </TouchableOpacity>
 
       <Modal animationType="slide" transparent visible={open} onRequestClose={() => setOpen(false)}>
@@ -334,11 +348,35 @@ export default function TravelPlanModal({ event }) {
               <TextInput
                 style={styles.input}
                 value={destination}
-                onChangeText={setDestination}
+                onChangeText={(value) => {
+                  setDestination(value);
+                  setDestinationCandidates([]);
+                  setSelectedPlaceId('');
+                  setConfirmTypedDestination(false);
+                }}
                 placeholder={initialDestination ? 'Extracted destination' : 'Enter destination'}
                 placeholderTextColor={colors.textMuted}
               />
               {!initialDestination && <Text style={styles.hint}>Enter the venue or address manually.</Text>}
+              {destinationCandidates.map((candidate) => (
+                <TouchableOpacity key={candidate.place_id} style={styles.modeButton} onPress={() => {
+                  setSelectedPlaceId(candidate.place_id);
+                  setConfirmTypedDestination(false);
+                }}>
+                  <Text style={styles.modeButtonText}>{selectedPlaceId === candidate.place_id ? '✓ ' : ''}{candidate.name}</Text>
+                  <Text style={styles.hint}>{candidate.formatted_address}</Text>
+                </TouchableOpacity>
+              ))}
+              {!!error && destinationCandidates.length === 0 && error.toLowerCase().includes('confirm') && (
+                <TouchableOpacity style={styles.modeButton} onPress={() => {
+                  setSelectedPlaceId('');
+                  setConfirmTypedDestination(true);
+                  setError('Typed destination selected. Calculate the route to continue.');
+                }}>
+                  <Text style={styles.modeButtonText}>Use this typed destination</Text>
+                </TouchableOpacity>
+              )}
+              {destinationCandidates.length > 0 && !selectedPlaceId && <Text style={styles.hint}>Select the destination that matches the invitation before calculating.</Text>}
 
               <Text style={styles.label}>Where are you starting from?</Text>
               <View style={styles.originControls}>
@@ -468,7 +506,7 @@ export default function TravelPlanModal({ event }) {
                   {!!event?.date && <Text style={styles.planLine}><Text style={styles.planLabel}>Date: </Text>{event.date}</Text>}
                   {!!event?.venue && <Text style={styles.planLine}><Text style={styles.planLabel}>Venue: </Text>{event.venue}</Text>}
                   {!!event?.address && <Text style={styles.planLine}><Text style={styles.planLabel}>Address: </Text>{event.address}</Text>}
-                  <Text style={styles.planLine}><Text style={styles.planLabel}>Total travel duration (Google Maps): </Text>{displayTravelDuration(plan.travel_duration_text)}</Text>
+                  <Text style={styles.planLine}><Text style={styles.planLabel}>{plan.travel_duration_label || (plan.traffic_aware ? 'Google Maps traffic-aware estimate (at calculation time)' : 'Google Maps travel time')}: </Text>{displayTravelDuration(plan.travel_duration_text)}</Text>
                   {scheduleAvailable ? (
                     <>
                       <Text style={styles.planLine}><Text style={styles.planLabel}>Event starts: </Text>{formatTime(plan.event_start_time, timezone)}</Text>
@@ -479,9 +517,11 @@ export default function TravelPlanModal({ event }) {
                   ) : plan.event_start_time ? (
                     <Text style={styles.planLine}><Text style={styles.planLabel}>Event starts: </Text>{formatTime(plan.event_start_time, timezone)}</Text>
                   ) : null}
-                  <Text style={styles.planLine}><Text style={styles.planLabel}>Destination: </Text>{plan.destination || selectedDestinationText(destination, event)}</Text>
+                  <Text style={styles.planLine}><Text style={styles.planLabel}>Invitation address: </Text>{plan.destination || selectedDestinationText(destination, event)}</Text>
+                  {!!plan.destination_place_name && <Text style={styles.planLine}><Text style={styles.planLabel}>Google Maps place: </Text>{plan.destination_place_name}{plan.destination_resolved_address ? ` · ${plan.destination_resolved_address}` : ''}</Text>}
                   <Text style={styles.planLine}><Text style={styles.planLabel}>Distance: </Text>{plan.distance_text || 'Unavailable'}</Text>
                   {!!scheduleMessage && <Text style={styles.scheduleMessage}>{scheduleMessage}</Text>}
+                  {!!plan.route_note && <Text style={styles.hint}>{plan.route_note}</Text>}
                   {!scheduleAvailable && !scheduleMessage && <Text style={styles.unavailable}>Event time unavailable — travel schedule cannot be calculated.</Text>}
                   {plan.google_maps_url && (
                     <TouchableOpacity style={styles.mapsButton} onPress={openMaps}>

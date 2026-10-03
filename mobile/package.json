@@ -5,6 +5,7 @@
   "private": true,
   "scripts": {
     "start": "expo start",
+    "start:tunnel": "expo start --tunnel",
     "android": "expo run:android",
     "web": "expo start --web",
     "build:apk": "eas build -p android --profile preview",
@@ -23,6 +24,7 @@
     "expo-image-picker": "~15.1.0",
     "expo-location": "~17.0.1",
     "expo-notifications": "^0.28.19",
+    "expo-secure-store": "~13.0.2",
     "expo-status-bar": "~1.12.1",
     "react": "18.2.0",
     "react-dom": "18.2.0",

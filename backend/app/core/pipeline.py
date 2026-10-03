@@ -119,39 +119,65 @@ def run_pipeline(image_bytes: bytes, filename: str, source: str = "gallery") -> 
         normal full-page OCR path.
         """
         height, width = img_arr.shape[:2]
-        # Keep the crop inside the centered names; side ornaments contain
-        # decorative words such as "Better" that can resemble short names.
-        x0, x1 = int(width * 0.18), int(width * 0.84)
-        y0, y1 = int(height * 0.13), int(height * 0.42)
-        if x1 <= x0 or y1 <= y0:
-            return []
-        crop = img_arr[y0:y1, x0:x1]
-        scale = 2.0
-        crop = cv2.resize(crop, None, fx=scale, fy=scale,
-                          interpolation=cv2.INTER_CUBIC)
+        # Keep one broad crop for different invitation layouts and a tighter
+        # center crop for large script names. The latter avoids nearby slogans
+        # such as "Two Hearts One Life" competing with the couple's names.
+        regions = (
+            ("name_band", 0.18, 0.84, 0.13, 0.42),
+            ("name_band_center", 0.28, 0.72, 0.23, 0.37),
+        )
+        scale = 3.0
+        variants = []
+        for region_name, left, right, top, bottom in regions:
+            x0, x1 = int(width * left), int(width * right)
+            y0, y1 = int(height * top), int(height * bottom)
+            if x1 <= x0 or y1 <= y0:
+                continue
+            crop = img_arr[y0:y1, x0:x1]
+            enlarged = cv2.resize(crop, None, fx=scale, fy=scale,
+                                  interpolation=cv2.INTER_CUBIC)
+            gray = cv2.cvtColor(enlarged, cv2.COLOR_BGR2GRAY)
+            contrast = cv2.createCLAHE(
+                clipLimit=2.5, tileGridSize=(8, 8)
+            ).apply(gray)
+            # Scripted names use thin colored strokes that can disappear
+            # during full-page OCR. Try contrast and binary stroke variants.
+            _, binary = cv2.threshold(
+                contrast, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU
+            )
+            variants.extend((
+                (f"{region_name}_contrast", cv2.cvtColor(contrast, cv2.COLOR_GRAY2BGR), x0, y0),
+                (f"{region_name}_binary", cv2.cvtColor(binary, cv2.COLOR_GRAY2BGR), x0, y0),
+            ))
         with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp:
             tmp_path = tmp.name
         try:
-            cv2.imwrite(tmp_path, crop)
-            result = extract_text(
-                tmp_path,
-                use_ppocr=settings.use_ocr_ppocr,
-                lang="en",
-                use_rapidocr=settings.use_rapidocr,
-                use_tamil_ocr=False,
-            )
-            selected = getattr(result, "selected_lines", [])
-            lines = selected if len(selected) == len(result.lines) else [
-                (text, box, conf, "name_band")
-                for text, box, conf in result.lines
-            ]
             translated = []
-            for text, box, conf, source_name in lines:
-                translated_box = (np.asarray(box, dtype=np.float32) / scale)
-                translated_box[:, 0] += x0
-                translated_box[:, 1] += y0
-                translated.append((text, translated_box, conf,
-                                   source_name + "_name_band"))
+            seen_text = set()
+            for source_name, variant, x0, y0 in variants:
+                cv2.imwrite(tmp_path, variant)
+                result = extract_text(
+                    tmp_path,
+                    use_ppocr=settings.use_ocr_ppocr,
+                    lang="en",
+                    use_rapidocr=settings.use_rapidocr,
+                    use_tamil_ocr=False,
+                )
+                selected = getattr(result, "selected_lines", [])
+                lines = selected if len(selected) == len(result.lines) else [
+                    (text, box, conf, source_name)
+                    for text, box, conf in result.lines
+                ]
+                for text, box, conf, engine_name in lines:
+                    normalized = "".join(ch.lower() for ch in str(text) if ch.isalnum())
+                    if not normalized or normalized in seen_text:
+                        continue
+                    seen_text.add(normalized)
+                    translated_box = (np.asarray(box, dtype=np.float32) / scale)
+                    translated_box[:, 0] += x0
+                    translated_box[:, 1] += y0
+                    translated.append((text, translated_box, conf,
+                                       f"{engine_name}_{source_name}"))
             # Cursive names are often returned one word per detection. Group
             # detections that share a visual row so the parser receives
             # "Karthik Srinivasan" instead of two unrelated candidates.
@@ -191,6 +217,9 @@ def run_pipeline(image_bytes: bytes, filename: str, source: str = "gallery") -> 
                 grouped.append((text, merged_box,
                                 max(float(value[2]) for value in row_items),
                                 row_items[0][3]))
+            if grouped:
+                logger.info("[%s OCR] Name-band candidates: %s", label,
+                            [str(item[0]) for item in grouped])
             return grouped
         except Exception as exc:
             logger.warning("[%s OCR] Name-band OCR failed (%s)", label, exc)
@@ -471,6 +500,9 @@ def run_pipeline(image_bytes: bytes, filename: str, source: str = "gallery") -> 
         "bride_name": parsed.get("bride_name", ""),
         "groom_name": parsed.get("groom_name", ""),
         "date": parsed.get("date", ""),
+        "start_date": parsed.get("start_date", ""),
+        "end_date": parsed.get("end_date", ""),
+        "day": parsed.get("day", ""),
         "time": parsed.get("time", ""),
         "end_time": parsed.get("end_time", ""),
         "venue": parsed.get("venue", ""),

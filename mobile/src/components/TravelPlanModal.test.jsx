@@ -63,6 +63,13 @@ function findByText(root, text) {
   return root.find((node) => node.props?.children === text);
 }
 
+function collectText(value) {
+  if (typeof value === 'string' || typeof value === 'number') return String(value);
+  if (Array.isArray(value)) return value.map(collectText).join(' ');
+  if (value?.props?.children) return collectText(value.props.children);
+  return '';
+}
+
 async function tap(root, text) {
   const node = findByText(root, text);
   await act(async () => {
@@ -187,5 +194,105 @@ test('maps Car to DRIVE and Bike / Scooter to TWO_WHEELER in the API request', a
   await tap(bike.root, 'Calculate Travel Plan');
   expect(planTravel).toHaveBeenCalledWith(expect.objectContaining({
     travel_mode: 'TWO_WHEELER',
+  }));
+});
+
+test('displays the duration, distance, and schedule from the travel API response', async () => {
+  planTravel.mockResolvedValue({
+    google_maps_url: 'https://www.google.com/maps/dir/?api=1',
+    travel_duration_text: '1 hr 56 min',
+    travel_duration_label: 'Google Maps traffic-aware estimate (at calculation time)',
+    traffic_aware: true,
+    distance_text: '89.9 km',
+    event_start_time: '2026-10-02T18:00:00+05:30',
+    arrival_time: '2026-10-02T17:45:00+05:30',
+    departure_time: '2026-10-02T15:49:00+05:30',
+    ready_time: '2026-10-02T14:49:00+05:30',
+    timezone: 'Asia/Kolkata',
+    schedule_available: true,
+    route_note: 'Google Maps may show a different ETA if traffic changes or it displays a different alternative route.',
+  });
+  const component = renderModal();
+  await tap(component.root, 'Plan My Travel');
+  await tap(component.root, 'Use Current Location');
+  await tap(component.root, 'Calculate Travel Plan');
+
+  const visibleText = component.root.findAllByType('Text')
+    .map((node) => collectText(node.props.children))
+    .join(' ');
+  expect(visibleText).toContain('1 hr 56 mins');
+  expect(visibleText).toContain('89.9 km');
+  expect(visibleText).toContain('3:49 PM');
+  expect(visibleText).toContain('2:49 PM');
+  expect(visibleText).toContain('Google Maps traffic-aware estimate');
+  expect(visibleText).toContain('Google Maps may show a different ETA');
+});
+
+test('lets the user select an ambiguous Google place without replacing the invitation address', async () => {
+  planTravel.mockRejectedValueOnce({
+    response: { data: { detail: {
+      message: 'Choose the correct Google Maps destination before calculating this route.',
+      destination_candidates: [{
+        place_id: 'sivasami-place',
+        name: 'Sivasami Maaligai',
+        formatted_address: '52/46, Mukkudal, Tamil Nadu 627601, India',
+      }],
+    } } },
+  }).mockResolvedValueOnce({
+    destination: 'Sivasami Maaligai Marriage Hall, Alangulam Road, Mukkudal, Tirunelveli - 627 758',
+    destination_place_name: 'Sivasami Maaligai',
+    destination_resolved_address: '52/46, Mukkudal, Tamil Nadu 627601, India',
+    google_maps_url: 'https://www.google.com/maps/dir/?api=1',
+    travel_duration_text: '2 hr 2 min',
+    distance_text: '89.9 km',
+  });
+  const component = create(<TravelPlanModal event={{
+    ...event,
+    venue: 'Sivasami Maaligai Marriage Hall',
+    address: 'Alangulam Road, Mukkudal, Tirunelveli - 627 758',
+  }} />);
+  await tap(component.root, 'Plan My Travel');
+  await tap(component.root, 'Enter Manually');
+  const originInput = component.root.findAllByType('TextInput').find((node) => node.props.placeholder === 'Starting location');
+  await act(async () => originInput.props.onChangeText('Tiruchendur, Tamil Nadu'));
+  await tap(component.root, 'Calculate Travel Plan');
+
+  let candidate;
+  act(() => {
+    candidate = component.root.findAllByType('TouchableOpacity')
+      .find((node) => collectText(node.props.children).includes('Sivasami Maaligai'));
+    candidate.props.onPress();
+  });
+  await tap(component.root, 'Calculate Travel Plan');
+
+  expect(planTravel.mock.calls[1][0]).toEqual(expect.objectContaining({
+    destination_place_id: 'sivasami-place',
+    destination: { type: 'event', address: expect.stringContaining('Alangulam Road') },
+  }));
+  const visibleText = component.root.findAllByType('Text').map((node) => collectText(node.props.children)).join(' ');
+  expect(visibleText).toContain('Invitation address:  Sivasami Maaligai Marriage Hall');
+  expect(visibleText).toContain('Google Maps place:  Sivasami Maaligai');
+  expect(visibleText).toContain('52/46, Mukkudal, Tamil Nadu 627601');
+});
+
+test('requires explicit confirmation before routing an unresolved typed destination', async () => {
+  planTravel.mockRejectedValueOnce({
+    response: { data: { detail: {
+      message: 'Google Maps could not verify this venue. Confirm the typed destination to continue.',
+      destination_candidates: [],
+    } } },
+  }).mockResolvedValueOnce({ google_maps_url: 'https://www.google.com/maps/dir/?api=1' });
+  const component = renderModal();
+  await tap(component.root, 'Plan My Travel');
+  await tap(component.root, 'Enter Manually');
+  const originInput = component.root.findAllByType('TextInput').find((node) => node.props.placeholder === 'Starting location');
+  await act(async () => originInput.props.onChangeText('Tiruchendur'));
+  await tap(component.root, 'Calculate Travel Plan');
+  await tap(component.root, 'Use this typed destination');
+  await tap(component.root, 'Calculate Travel Plan');
+
+  expect(planTravel.mock.calls[1][0]).toEqual(expect.objectContaining({
+    confirm_unverified_destination: true,
+    destination_place_id: '',
   }));
 });

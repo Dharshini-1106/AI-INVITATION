@@ -3,7 +3,6 @@ import { useLocation, useNavigate } from 'react-router-dom';
 import colors from '../theme/colors';
 import { analyzeInvitation, getPipelineStages } from '../services/api';
 import ErrorBanner from '../components/ErrorBanner';
-import { saveAnalysisResult } from '../utils/resultState';
 
 const DEFAULT_STAGES = [
   'Analyzing image quality (BRISQUE)',
@@ -53,23 +52,14 @@ function ProcessingScreen() {
         clearInterval(stageTimer);
         setActiveStage(stages.length - 1);
         setPercent(100);
-        saveAnalysisResult(result, previewUrl);
         setTimeout(() => navigate('/result', { state: { result, previewUrl } }), 600);
       } catch (e) {
         if (cancelled) return;
         clearInterval(stageTimer);
-        if (e.code === 'ECONNABORTED' || e.code === 'ETIMEDOUT' ||
-            (e.code === 'ERR_NETWORK' && /timeout/i.test(e.message || ''))) {
-          setError('Analysis timed out. The invitation is taking longer than expected to process. Please try again with a clearer image or wait a bit longer.');
-        } else if (!e.response) {
-          setError('Cannot reach the backend. Please check that the backend is running on your PC and your phone/PC are on the same network.');
-        } else if (e.response.status >= 500) {
-          setError('Backend server error. Please try again later.');
-        } else if (e.response.status >= 400) {
-          setError(e.response?.data?.detail || `Request failed (${e.response.status}). Please try again.`);
-        } else {
-          setError('Analysis failed. Please check the backend is running and try again.');
-        }
+        setError(
+          e.response?.data?.detail ||
+          'Analysis failed. Please check the backend is running and try again.'
+        );
       }
     };
 

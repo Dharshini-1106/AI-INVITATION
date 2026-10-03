@@ -24,7 +24,9 @@ function expoHostUrl() {
     return null;
   }
 }
-const expoLanUrl = Platform.OS === 'android' ? expoHostUrl() : null;
+// On a physical device, loopback points to the phone itself on both iOS and
+// Android. Expo's host URI gives us the development machine's LAN address.
+const expoLanUrl = expoHostUrl();
 
 const API_CONFIG = {
   baseURL: apiBaseUrl(configuredUrl || emulatorUrl),
@@ -40,6 +42,10 @@ function candidateBaseUrls() {
     configuredUrl && apiBaseUrl(configuredUrl),
     expoLanUrl,
     API_CONFIG.baseURL,
+    // Keep the Android emulator bridge available even when a LAN override is
+    // set. This does not work on a physical phone, but is the right fallback
+    // when the app is running in an Android emulator.
+    apiBaseUrl(emulatorUrl),
     'http://127.0.0.1:8000/api/v1',
   ].filter(Boolean))];
 }

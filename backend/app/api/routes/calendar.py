@@ -3,7 +3,7 @@ import logging
 import re
 import secrets
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import List, Optional
 
 import requests
@@ -101,6 +101,21 @@ def _refresh_token(refresh_token: str) -> Optional[dict]:
 
 
 def _calendar_event_payload(event: Event) -> dict:
+    if event.start_date and event.end_date and not event.time and not event.end_time:
+        start_date = datetime.strptime(event.start_date, "%Y-%m-%d").date()
+        inclusive_end = datetime.strptime(event.end_date, "%Y-%m-%d").date()
+        if inclusive_end < start_date:
+            raise ValueError("End date cannot be before start date.")
+        return {
+            "summary": event.summary or event.event_name or event.event_type or "Invitation Event",
+            "start": {"date": start_date.isoformat()},
+            # Google Calendar uses an exclusive end date for all-day events.
+            "end": {"date": (inclusive_end + timedelta(days=1)).isoformat()},
+            **({"location": ", ".join(p for p in [event.venue, event.address, event.location] if _usable(p))}
+               if any(_usable(p) for p in [event.venue, event.address, event.location]) else {}),
+            **({"description": "\n".join(p for p in [event.event_type, event.description, event.occasion_detail] if _usable(p))}
+               if any(_usable(p) for p in [event.event_type, event.description, event.occasion_detail]) else {}),
+        }
     start_dt = _to_iso_datetime(event.date, event.time)
     end_dt = _to_iso_datetime(event.date, event.end_time) if event.end_time else {}
 

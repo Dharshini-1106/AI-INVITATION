@@ -69,6 +69,9 @@ function TravelPlanModal({ event }) {
   const [plan, setPlan] = useState(null);
   const [error, setError] = useState('');
   const [mapsUrl, setMapsUrl] = useState('');
+  const [destinationCandidates, setDestinationCandidates] = useState([]);
+  const [selectedPlaceId, setSelectedPlaceId] = useState('');
+  const [confirmTypedDestination, setConfirmTypedDestination] = useState(false);
 
   useEffect(() => {
     if (previousEventKey.current !== eventKey) {
@@ -87,6 +90,9 @@ function TravelPlanModal({ event }) {
       setPlan(null);
       setError('');
       setMapsUrl('');
+      setDestinationCandidates([]);
+      setSelectedPlaceId('');
+      setConfirmTypedDestination(false);
     }
   }, [open, eventKey]);
 
@@ -141,11 +147,15 @@ function TravelPlanModal({ event }) {
 
     setLoading(true);
     try {
+      const selectedDestination = destination.trim();
+      const destinationIsExtracted = selectedDestination === initialDestination.trim();
       const response = await planTravel({
         origin: origin.trim(),
-        destination: destination.trim(),
-        destination_venue: event?.venue || '',
-        destination_address: event?.address || '',
+        destination: selectedDestination,
+        destination_venue: destinationIsExtracted ? (event?.venue || '') : selectedDestination,
+        destination_address: destinationIsExtracted ? (event?.address || '') : '',
+        destination_place_id: selectedPlaceId,
+        confirm_unverified_destination: confirmTypedDestination,
         event_date: event?.date || '',
         event_start_time: event?.time || '',
         event_timezone: event?.timezone || '',
@@ -158,6 +168,7 @@ function TravelPlanModal({ event }) {
     } catch (requestError) {
       setError(getErrorMessage(requestError));
       setMapsUrl(requestError.response?.data?.detail?.google_maps_url || '');
+      setDestinationCandidates(requestError.response?.data?.detail?.destination_candidates || []);
     } finally {
       setLoading(false);
     }
@@ -226,9 +237,35 @@ function TravelPlanModal({ event }) {
               <input
                 style={styles.input}
                 value={destination}
-                onChange={(value) => setDestination(value.target.value)}
+                onChange={(value) => {
+                  setDestination(value.target.value);
+                  setDestinationCandidates([]);
+                  setSelectedPlaceId('');
+                  setConfirmTypedDestination(false);
+                }}
                 placeholder={initialDestination || 'Enter event destination'}
               />
+              {destinationCandidates.map((candidate) => (
+                <button
+                  key={candidate.place_id}
+                  type="button"
+                  style={selectedPlaceId === candidate.place_id ? styles.optionButtonActive : styles.optionButton}
+                  onClick={() => { setSelectedPlaceId(candidate.place_id); setConfirmTypedDestination(false); }}
+                >
+                  <strong>{selectedPlaceId === candidate.place_id ? '✓ ' : ''}{candidate.name}</strong><br />
+                  {candidate.formatted_address}
+                </button>
+              ))}
+              {error.toLowerCase().includes('confirm') && destinationCandidates.length === 0 && (
+                <button type="button" style={styles.optionButton} onClick={() => {
+                  setSelectedPlaceId('');
+                  setConfirmTypedDestination(true);
+                  setError('Typed destination selected. Calculate the route to continue.');
+                }}>Use this typed destination</button>
+              )}
+              {destinationCandidates.length > 0 && !selectedPlaceId && (
+                <p style={styles.hint}>Select the place that matches the invitation before calculating.</p>
+              )}
               {!initialDestination && (
                 <p style={styles.hint}>No extracted venue or address was found. Enter the destination manually.</p>
               )}
@@ -313,10 +350,11 @@ function TravelPlanModal({ event }) {
                 <div style={styles.planGrid}>
                   <span>Event</span><strong>{event?.event_name || event?.event_type || 'Extracted event'}</strong>
                   <span>Date</span><strong>{formatDateTime(plan.event_start_time, timezone)}</strong>
-                  <span>Destination</span><strong>{plan.destination_place_name || plan.destination}</strong>
+                  <span>Invitation address</span><strong>{plan.destination}</strong>
+                  {plan.destination_place_name && <><span>Google Maps place</span><strong>{plan.destination_place_name}{plan.destination_resolved_address ? ` · ${plan.destination_resolved_address}` : ''}</strong></>}
                   <span>Starting from</span><strong>{plan.origin}</strong>
                   <span>Travel mode</span><strong>{selectedMode?.label || plan.travel_mode}</strong>
-                  <span>Google Maps travel time</span><strong>{plan.travel_duration_text || 'Unavailable'}</strong>
+                  <span>{plan.travel_duration_label || (plan.traffic_aware ? 'Google Maps traffic-aware estimate (at calculation time)' : 'Google Maps travel time')}</span><strong>{plan.travel_duration_text || 'Unavailable'}</strong>
                   <span>Distance</span><strong>{plan.distance_text || 'Unavailable'}</strong>
                 </div>
 
@@ -339,6 +377,7 @@ function TravelPlanModal({ event }) {
                     Open in Google Maps
                   </a>
                 )}
+                {plan.route_note && <p style={styles.hint}>{plan.route_note}</p>}
               </div>
             )}
           </div>

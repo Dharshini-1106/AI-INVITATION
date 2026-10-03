@@ -138,6 +138,17 @@ const [backendStatus, setBackendStatus] = useState('checking');
         <View style={styles.actions}>
           <TouchableOpacity
             style={styles.actionCard}
+            onPress={() => navigation.navigate('SavedEvents')}
+          >
+            <Text style={styles.actionIcon}>📅</Text>
+            <View>
+              <Text style={styles.actionTitle}>My Events</Text>
+              <Text style={styles.actionDesc}>Return to saved event details and travel plans</Text>
+            </View>
+          </TouchableOpacity>
+
+          <TouchableOpacity
+            style={styles.actionCard}
             onPress={() => navigation.navigate('GalleryUpload')}
           >
             <Text style={styles.actionIcon}>🖼️</Text>

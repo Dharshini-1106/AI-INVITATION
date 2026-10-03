@@ -6,6 +6,9 @@ export class InvitationEvent {
     bride_name = '',
     groom_name = '',
     date = '',
+    start_date = '',
+    end_date = '',
+    day = '',
     time = '',
     end_time = '',
     venue = '',
@@ -23,6 +26,9 @@ export class InvitationEvent {
     this.bride_name = bride_name;
     this.groom_name = groom_name;
     this.date = date;
+    this.start_date = start_date;
+    this.end_date = end_date;
+    this.day = day;
     this.time = time;
     this.end_time = end_time;
     this.venue = venue;
@@ -55,7 +61,11 @@ export class InvitationResult {
     bride_name = '',
     groom_name = '',
     date = '',
+    start_date = '',
+    end_date = '',
+    day = '',
     time = '',
+    end_time = '',
     venue = '',
     address = '',
     contact_address = '',
@@ -82,7 +92,11 @@ export class InvitationResult {
     this.bride_name = bride_name;
     this.groom_name = groom_name;
     this.date = date;
+    this.start_date = start_date;
+    this.end_date = end_date;
+    this.day = day;
     this.time = time;
+    this.end_time = end_time;
     this.venue = venue;
     this.address = address;
     this.contact_address = contact_address;
@@ -113,7 +127,11 @@ export class InvitationResult {
       bride_name: this.bride_name,
       groom_name: this.groom_name,
       date: this.date,
+      start_date: this.start_date,
+      end_date: this.end_date,
+      day: this.day,
       time: this.time,
+      end_time: this.end_time,
       venue: this.venue,
       address: this.address,
       contact_number: this.contact_number,

@@ -49,6 +49,9 @@ class Settings(BaseSettings):
     mongo_uri: str = ""
     jwt_secret: str = ""
     auth_cookie_secure: bool = False
+    # Use "none" with AUTH_COOKIE_SECURE=true when frontend and API are
+    # hosted on different sites. Keep "lax" for local/same-site deployments.
+    auth_cookie_samesite: str = "lax"
 
     class Config:
         env_file = BASE_DIR / ".env"
